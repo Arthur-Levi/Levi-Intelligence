@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: levi_intelligence
+      POSTGRES_USER: levi
+      POSTGRES_PASSWORD: levi_local_only
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - levi_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U levi -d levi_intelligence"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  postgres-test:
+    image: postgres:16-alpine
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: levi_intelligence_test
+      POSTGRES_USER: levi_test
+      POSTGRES_PASSWORD: levi_test_only
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U levi_test -d levi_intelligence_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+  discovery-worker:
+    build:
+      context: ./backend
+    profiles: ["workers"]
+    command: ["python", "-m", "app.workers.discovery"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://levi:levi_local_only@postgres:5432/levi_intelligence
+      APP_ENV: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - levi_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  levi_postgres_data:
+  levi_redis_data:
