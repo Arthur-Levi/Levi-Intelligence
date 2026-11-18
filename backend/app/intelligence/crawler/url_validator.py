@@ -15,7 +15,6 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from .exceptions import UnsafeTargetError
 
-
 MAX_URL_LENGTH = 2_048
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 ALLOWED_PORTS = {

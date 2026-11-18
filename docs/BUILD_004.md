@@ -23,8 +23,8 @@ Configure `APIFY_API_TOKEN` and `APIFY_ACTOR_ID`. The adapter starts the configu
 
 - Normalize company names and HTTP(S) website URLs.
 - Normalize domains for tenant-scoped deduplication.
-- Verify the homepage with bounded timeouts and no redirect following.
-- Reject credentials in URLs and hostnames resolving to non-public IP addresses.
+- Verify the homepage with bounded timeouts through the Build 006A pinned crawler transport.
+- Reject credentials, unsafe DNS answers, and unsafe redirect destinations.
 - Extract business emails and phone numbers visibly present in homepage HTML.
 - Store verification outcome and captured evidence in `source_records`.
 - Do not infer or fabricate contact information. This is not automated personal-profile scraping.
@@ -67,5 +67,5 @@ The worker polls PostgreSQL directly, so the queue remains durable if the worker
 - Ruff was not installed in the execution environment; lint was not run.
 - No live Apify Actor was run because credentials and the Actor-specific schema were not supplied.
 - No real PostgreSQL migration execution was claimed.
-- Website verification has DNS-based public-address checks and disables redirects. Production deployment should add network-level egress controls and DNS pinning to fully address DNS rebinding.
+- Website verification's DNS pinning and manually revalidated redirects are implemented in Build 006A. Network-level egress controls remain recommended as defense in depth.
 - The worker is single-process friendly and uses row locks for multiple workers, but production monitoring, dead-letter operations, per-tenant quotas and queue latency metrics remain future hardening.
