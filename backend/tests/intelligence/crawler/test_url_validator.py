@@ -58,6 +58,18 @@ def test_accepts_valid_public_url(
         "https://example.com\\@127.0.0.1",
         " https://example.com",
         "https://example.com ",
+        "https://.example.com/",
+        "https://example..com/",
+        "https://-bad.example/",
+        "https://bad-.example/",
+        "https://example.com%2e.evil/",
+        "https://example.com@127.0.0.1/",
+        "https://[::ffff:127.0.0.1]/",
+        "https://[fe80::1%25eth0]/",
+        "https://example.com:99999/",
+        "https://example.com:abc/",
+        "https://example.com\\\\evil/",
+        "https://example.com/\nheader:value",
     ],
 )
 def test_rejects_unsafe_or_invalid_url(url: str) -> None:

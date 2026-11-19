@@ -52,7 +52,16 @@ def test_accepts_public_ipv4_and_ipv6(address: str) -> None:
     assert validate_resolved_addresses([record(address)]) == (address,)
 
 
-@pytest.mark.parametrize("address", ["10.0.0.1", "fd00::1", "fe80::1"])
+@pytest.mark.parametrize(
+    "address",
+    [
+        "127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1",
+        "169.254.1.1", "0.0.0.0", "100.64.0.1", "192.0.2.1",
+        "198.18.0.1", "224.0.0.1", "255.255.255.255",
+        "::", "::1", "fc00::1", "fd00::1", "fe80::1", "ff02::1",
+        "::ffff:127.0.0.1", "::ffff:10.0.0.1",
+    ],
+)
 def test_rejects_private_and_link_local_addresses(address: str) -> None:
     with pytest.raises(UnsafeTargetError):
         validate_resolved_addresses([record(address)])
@@ -72,6 +81,19 @@ def test_rejects_mixed_public_and_private_dns_answers() -> None:
 def test_rejects_empty_dns_answer() -> None:
     with pytest.raises(DNSResolutionError):
         validate_resolved_addresses([])
+
+
+@pytest.mark.parametrize(
+    "addresses",
+    [
+        ["8.8.8.8", "10.0.0.1"],
+        ["192.168.1.1", "127.0.0.1"],
+        ["fe80::1", "fd00::1"],
+    ],
+)
+def test_rejects_any_answer_containing_non_global_address(addresses: list[str]) -> None:
+    with pytest.raises(UnsafeTargetError):
+        validate_resolved_addresses([record(address) for address in addresses])
 
 
 def test_rejects_scoped_dns_address() -> None:

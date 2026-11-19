@@ -26,7 +26,9 @@ def validate_resolved_addresses(records: list[ResolveResult]) -> tuple[str, ...]
             address = ipaddress.ip_address(raw_address)
         except (IndexError, TypeError, ValueError) as exc:
             raise DNSResolutionError("DNS returned a malformed address") from exc
-        if not address.is_global:
+        # ipaddress treats multicast as globally scoped on some Python versions;
+        # multicast is never a valid unicast destination for this crawler.
+        if not address.is_global or address.is_multicast:
             raise UnsafeTargetError(f"DNS returned a non-public address: {address}")
         normalized = str(address)
         if normalized not in seen:

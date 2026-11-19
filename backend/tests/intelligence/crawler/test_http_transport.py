@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from collections.abc import AsyncIterator, Callable
 from urllib.parse import urlsplit
@@ -545,3 +546,113 @@ async def test_error_closes_session_connector_and_owned_resolver(
     assert guards[0].closed
     assert sessions[0].closed
     assert sessions[0].connector is None or sessions[0].connector.closed
+
+
+@pytest.mark.asyncio
+async def test_connector_construction_failure_closes_owned_dns_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guards: list[FakeDNSGuard] = []
+
+    def make_guard() -> FakeDNSGuard:
+        guard = FakeDNSGuard()
+        guards.append(guard)
+        return guard
+
+    def fail_connector(**kwargs: object) -> FakeConnector:
+        raise RuntimeError("synthetic connector construction failure")
+
+    monkeypatch.setattr(http_transport, "DNSGuard", make_guard)
+    monkeypatch.setattr(http_transport.aiohttp, "TCPConnector", fail_connector)
+    allow_test_urls(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="connector construction"):
+        await SecureHTTPTransport().fetch("http://example.com/")
+
+    assert len(guards) == 1
+    assert guards[0].closed
+
+
+@pytest.mark.asyncio
+async def test_session_construction_failure_closes_connector_and_owned_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connectors: list[FakeConnector] = []
+    guards: list[FakeDNSGuard] = []
+
+    def make_guard() -> FakeDNSGuard:
+        guard = FakeDNSGuard()
+        guards.append(guard)
+        return guard
+
+    def make_connector(**kwargs: object) -> FakeConnector:
+        connector = FakeConnector(**kwargs)  # type: ignore[arg-type]
+        connectors.append(connector)
+        return connector
+
+    def fail_session(**kwargs: object) -> FakeSession:
+        raise RuntimeError("synthetic session construction failure")
+
+    monkeypatch.setattr(http_transport, "DNSGuard", make_guard)
+    monkeypatch.setattr(http_transport.aiohttp, "TCPConnector", make_connector)
+    monkeypatch.setattr(http_transport.aiohttp, "ClientSession", fail_session)
+    allow_test_urls(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="session construction"):
+        await SecureHTTPTransport().fetch("http://example.com/")
+
+    assert connectors[0].closed
+    assert guards[0].closed
+
+
+@pytest.mark.asyncio
+async def test_same_host_redirect_rejects_dns_rebinding_before_second_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolver = ControlledResolver(
+        [[dns_record("8.8.8.8")], [dns_record("10.0.0.8")]]
+    )
+    responses = iter(
+        [
+            FakeResponse(status=302, headers={"location": "/next"}),
+            FakeResponse(chunks=[b"must not be read"]),
+        ]
+    )
+    sessions, _ = install_http_mocks(monkeypatch, response_factory=lambda: next(responses))
+    allow_test_urls(monkeypatch)
+    guard = DNSGuard(resolver)
+
+    with pytest.raises(UnsafeTargetError):
+        await SecureHTTPTransport(dns_guard=guard).fetch("http://example.com/")
+
+    assert resolver.hosts == ["example.com", "example.com"]
+    assert len(sessions) == 2
+
+
+@pytest.mark.asyncio
+async def test_cancellation_closes_session_connector_and_owned_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions, guards = install_http_mocks(
+        monkeypatch, response_factory=lambda: FakeResponse(chunks=[])
+    )
+    allow_test_urls(monkeypatch)
+    stream_entered = asyncio.Event()
+    never_release = asyncio.Event()
+
+    async def blocked_stream(content: FakeContent, size: int) -> AsyncIterator[bytes]:
+        stream_entered.set()
+        await never_release.wait()
+        yield b"unreachable"
+
+    monkeypatch.setattr(FakeContent, "iter_chunked", blocked_stream)
+    task = asyncio.create_task(SecureHTTPTransport().fetch("http://example.com/"))
+    await asyncio.wait_for(stream_entered.wait(), timeout=1.0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert sessions[0].closed
+    assert sessions[0].connector.closed
+    assert guards[0].closed

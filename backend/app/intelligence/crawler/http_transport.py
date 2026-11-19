@@ -73,13 +73,14 @@ class SecureHTTPTransport:
         )
         owns_guard = self._dns_guard is None
         dns_guard = self._dns_guard or DNSGuard()
-        connector = aiohttp.TCPConnector(
-            resolver=PinnedResolver(dns_guard),
-            use_dns_cache=False,
-            force_close=True,
-            ssl=True,
-        )
+        connector: aiohttp.TCPConnector | None = None
         try:
+            connector = aiohttp.TCPConnector(
+                resolver=PinnedResolver(dns_guard),
+                use_dns_cache=False,
+                force_close=True,
+                ssl=True,
+            )
             async with aiohttp.ClientSession(
                 connector=connector,
                 timeout=timeout,
@@ -105,5 +106,9 @@ class SecureHTTPTransport:
         except aiohttp.ClientError as exc:
             raise FetchError("Crawler HTTP request failed") from exc
         finally:
+            # Covers failures while constructing ClientSession as well as
+            # cancellation/errors before its context manager takes ownership.
+            if connector is not None and not connector.closed:
+                await connector.close()
             if owns_guard:
                 await dns_guard.close()
