@@ -22,6 +22,11 @@ async def test_company_enrichment_uses_secure_transport(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(SecureHTTPTransport, "fetch", synthetic_fetch)
 
+    async def no_robots_network(self: SecureHTTPTransport, url: str) -> FetchResponse:
+        return FetchResponse(url=url, status=404, headers={}, body=b"")
+
+    monkeypatch.setattr(SecureHTTPTransport, "_fetch_robots_document", no_robots_network)
+
     result = await verify_and_extract("https://example.com")
 
     assert result["status"] == "verified"

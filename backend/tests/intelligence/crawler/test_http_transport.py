@@ -22,7 +22,18 @@ from app.intelligence.crawler.exceptions import (
     UnsafeTargetError,
 )
 from app.intelligence.crawler.http_transport import FetchResponse, SecureHTTPTransport
+from app.intelligence.crawler.robots_policy import RobotsPolicy
 from app.intelligence.crawler.url_validator import ValidatedURL
+
+
+@pytest.fixture(autouse=True)
+def bypass_robots_in_transport_boundary_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests isolate HTTP mechanics; policy integration has dedicated tests."""
+
+    async def allow(self: RobotsPolicy, url: str, fetcher: object) -> None:
+        return None
+
+    monkeypatch.setattr(RobotsPolicy, "check", allow)
 
 
 class SyntheticTransport(SecureHTTPTransport):

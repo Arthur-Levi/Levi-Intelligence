@@ -16,6 +16,7 @@ from .exceptions import (
     ResponseTooLargeError,
     TooManyRedirectsError,
 )
+from .robots_policy import CRAWLER_USER_AGENT, RobotsPolicy, get_default_robots_policy
 from .url_validator import ValidatedURL, validate_url
 
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
@@ -42,6 +43,7 @@ class SecureHTTPTransport:
         max_response_bytes: int = 500_000,
         max_redirects: int = 5,
         admission_controller: AdmissionController | None = None,
+        robots_policy: RobotsPolicy | None = None,
     ) -> None:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and greater than zero")
@@ -55,10 +57,13 @@ class SecureHTTPTransport:
         self._max_response_bytes = max_response_bytes
         self._max_redirects = max_redirects
         self._admission = admission_controller
+        self._robots = robots_policy
 
     async def fetch(self, url: str) -> FetchResponse:
         current = validate_url(url)
         for redirect_count in range(self._max_redirects + 1):
+            policy = self._robots or get_default_robots_policy()
+            await policy.check(current.url, self._fetch_robots_document)
             response = await self._request_admitted(current)
             location = response.headers.get("location")
             if response.status not in REDIRECT_STATUSES or location is None:
@@ -67,6 +72,19 @@ class SecureHTTPTransport:
                 raise TooManyRedirectsError("Redirect limit exceeded")
             current = validate_url(urljoin(current.url, location))
         raise TooManyRedirectsError("Redirect limit exceeded")
+
+    async def _fetch_robots_document(self, url: str) -> FetchResponse:
+        """Fetch robots.txt securely without recursively consulting robots policy."""
+        current = validate_url(url)
+        for redirect_count in range(self._max_redirects + 1):
+            response = await self._request_admitted(current)
+            location = response.headers.get("location")
+            if response.status not in REDIRECT_STATUSES or location is None:
+                return response
+            if redirect_count == self._max_redirects:
+                raise TooManyRedirectsError("robots.txt redirect limit exceeded")
+            current = validate_url(urljoin(current.url, location))
+        raise TooManyRedirectsError("robots.txt redirect limit exceeded")
 
     async def _request_admitted(self, target: ValidatedURL) -> FetchResponse:
         admission = self._admission or get_default_admission_controller()
@@ -93,7 +111,7 @@ class SecureHTTPTransport:
                 connector=connector,
                 timeout=timeout,
                 trust_env=False,
-                headers={"User-Agent": "LeviIntelligenceBot/1.0 (+business data verification)"},
+                headers={"User-Agent": CRAWLER_USER_AGENT},
             ) as session:
                 async with session.get(target.url, allow_redirects=False) as response:
                     chunks: list[bytes] = []
