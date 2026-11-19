@@ -42,20 +42,43 @@ Apify.
 - Unit tests use synthetic resolver answers and synthetic responses. They make no
   requests to real websites and do not use a database.
 
+## Transport review and expanded tests
+
+The deeper transport review found that `aiohttp.ClientError` failures outside
+timeouts could escape the crawler exception hierarchy. This included connection
+failures and response payload/protocol errors, which callers such as company
+enrichment do not handle as crawler errors. The transport now wraps these as
+`FetchError`; timeout exceptions remain mapped to `FetchTimeoutError`.
+
+Transport tests now cover streaming at and over the byte cap, bodies without a
+declared length, malformed/truncated payload errors, connection and read timeout
+translation, connection failure translation, redirects across hostnames with a
+new DNS resolution per hop, rejected redirect schemes, redirect chain limits,
+and session/connector/owned-resolver cleanup on failure. All new transport tests
+use mocks; no socket is opened. The test resolver returns a TEST-NET address
+and is never used to establish a connection. Existing DNS tests cover
+mixed and non-public IPv4/IPv6 answers, rebinding responses, and preservation of
+the request hostname for Host and TLS verification.
+
+The content-length mismatch case simulates the `aiohttp.ClientPayloadError`
+reported when a response body is shorter than declared. The transport's byte cap
+is enforced on streamed chunks regardless of `Content-Length`; this suite does
+not perform raw wire-level HTTP parser testing. No real sites, private services,
+or persistent databases were accessed.
+
 ## Validation results
 
-Results from the implementation run:
+Results from the transport review run:
 
-- `ruff check app/intelligence/crawler app/services/company_enrichment.py
-  tests/intelligence/crawler` — passed.
+- `ruff check app/intelligence/crawler/exceptions.py
+  app/intelligence/crawler/http_transport.py
+  tests/intelligence/crawler/test_http_transport.py` — passed.
 - `mypy app/intelligence/crawler app/services/company_enrichment.py` — passed,
   6 source files checked.
-- `pytest -q tests/intelligence/crawler` — passed, 51 tests.
-- `pytest -q --ignore=tests/test_health.py` — passed, 68 tests; 1 PostgreSQL
+- `pytest -q tests/intelligence/crawler` — passed, 62 tests.
+- `pytest -q --ignore=tests/test_health.py` — passed, 79 tests; 1 PostgreSQL
   integration test skipped because `TEST_DATABASE_URL` was not configured.
-- `ruff check .` — not clean: 324 existing findings across the backend. The
-  changed crawler and company-enrichment files pass the targeted Ruff command.
-- `timeout 25 pytest -vv -s tests/test_health.py` — timed out (exit 124) while
-  waiting for `test_liveness_returns_ok`; no result was claimed for that test.
-- `timeout 30 pytest -vv` — timed out (exit 124) at the same health TestClient
-  test. No database or real website was accessed.
+- An initial local-server attempt failed before exercising the transport: 9
+  tests failed to bind loopback, while the other 53 crawler tests passed. The
+  restricted Codespace disallows that bind. Those cases were changed to
+  socket-free mocks; the final validation results above are from that suite.

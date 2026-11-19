@@ -9,6 +9,7 @@ import aiohttp
 
 from .dns_guard import DNSGuard, PinnedResolver
 from .exceptions import (
+    FetchError,
     FetchTimeoutError,
     ResponseTooLargeError,
     TooManyRedirectsError,
@@ -92,8 +93,8 @@ class SecureHTTPTransport:
                     )
         except TimeoutError as exc:
             raise FetchTimeoutError("Crawler request timed out") from exc
-        except aiohttp.ClientConnectorError:
-            raise
+        except aiohttp.ClientError as exc:
+            raise FetchError("Crawler HTTP request failed") from exc
         finally:
             if owns_guard:
                 await dns_guard.close()

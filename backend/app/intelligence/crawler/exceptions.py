@@ -30,5 +30,9 @@ class FetchTimeoutError(CrawlerSecurityError):
     """Raised when a crawler request exceeds its timeout."""
 
 
+class FetchError(CrawlerSecurityError):
+    """Raised when an HTTP request or response cannot be processed safely."""
+
+
 class UnsupportedContentTypeError(CrawlerSecurityError):
     """Raised when a response has an unsupported content type."""
