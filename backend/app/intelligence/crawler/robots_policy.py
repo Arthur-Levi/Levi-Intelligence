@@ -223,6 +223,7 @@ class RobotsPolicy:
         self._cache: OrderedDict[str, _CacheEntry] = OrderedDict()
         self._inflight: dict[str, _Flight] = {}
         self._lock = asyncio.Lock()
+        self._pending_checks = 0
 
     @property
     def cached_origins(self) -> int:
@@ -231,6 +232,16 @@ class RobotsPolicy:
     @property
     def inflight_origins(self) -> int:
         return len(self._inflight)
+
+    @property
+    def pending_checks(self) -> int:
+        """Number of checks currently executing or waiting for policy state."""
+        return self._pending_checks
+
+    @property
+    def max_pending_checks(self) -> int:
+        """Finite bound covering every inflight origin and its allowed waiters."""
+        return self.max_inflight_origins * (self.max_waiters_per_origin + 1)
 
     def _origin_and_robots_url(self, url: str) -> tuple[str, str]:
         target: ValidatedURL = validate_url(url)
@@ -336,16 +347,24 @@ class RobotsPolicy:
 
     async def check(self, url: str, fetcher: RobotsFetcher) -> None:
         origin, robots_url = self._origin_and_robots_url(url)
+        # Count before the first await so callers cannot accumulate without
+        # bound while queued on the policy lock itself.
+        if self._pending_checks >= self.max_pending_checks:
+            raise RobotsPolicyError("robots policy check capacity is full")
+        self._pending_checks += 1
         try:
-            rules = await self._get_rules(origin, robots_url, fetcher)
-        except asyncio.CancelledError:
-            raise
-        except RobotsPolicyError:
-            raise
-        except CrawlerSecurityError as exc:
-            raise RobotsPolicyError("robots.txt request failed closed") from exc
-        if not rules.allows(url):
-            raise RobotsDeniedError("robots.txt disallows this crawler path")
+            try:
+                rules = await self._get_rules(origin, robots_url, fetcher)
+            except asyncio.CancelledError:
+                raise
+            except RobotsPolicyError:
+                raise
+            except CrawlerSecurityError as exc:
+                raise RobotsPolicyError("robots.txt request failed closed") from exc
+            if not rules.allows(url):
+                raise RobotsDeniedError("robots.txt disallows this crawler path")
+        finally:
+            self._pending_checks -= 1
 
 
 DEFAULT_ROBOTS_POLICY = RobotsPolicy()

@@ -88,6 +88,7 @@ class AdmissionController:
         self._states: dict[str, _HostState] = {}
         self._waiters: deque[_Waiter] = deque()
         self._active = 0
+        self._pending_acquires = 0
 
     def _bind_to_running_loop(self) -> None:
         loop = asyncio.get_running_loop()
@@ -108,6 +109,16 @@ class AdmissionController:
     @property
     def tracked_hosts(self) -> int:
         return len(self._states)
+
+    @property
+    def pending_acquires(self) -> int:
+        """Number of active or waiting calls currently entering admission."""
+        return self._pending_acquires
+
+    @property
+    def max_pending_acquires(self) -> int:
+        """Finite bound covering active capacity and the explicit waiter queue."""
+        return self.config.global_limit + self.config.max_waiters
 
     @staticmethod
     def normalize_hostname(hostname: str) -> str:
@@ -187,6 +198,17 @@ class AdmissionController:
     async def acquire(self, hostname: str) -> None:
         self._bind_to_running_loop()
         key = self.normalize_hostname(hostname)
+        # Count before the first await so contention on Condition's own lock
+        # cannot create a hidden, unbounded queue ahead of max_waiters.
+        if self._pending_acquires >= self.max_pending_acquires:
+            raise AdmissionRejectedError("Crawler admission pending capacity is full")
+        self._pending_acquires += 1
+        try:
+            await self._acquire_pending(key)
+        finally:
+            self._pending_acquires -= 1
+
+    async def _acquire_pending(self, key: str) -> None:
         async with self._condition:
             now = self._clock()
             state = self._state_for(key, now)

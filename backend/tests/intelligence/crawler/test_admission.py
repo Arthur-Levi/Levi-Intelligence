@@ -56,6 +56,33 @@ async def test_queue_is_bounded_and_cancelled_waiter_is_removed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_condition_lock_contention_has_a_finite_pending_acquire_limit() -> None:
+    admission = AdmissionController(
+        AdmissionConfig(global_limit=1, per_host_limit=1, max_waiters=1, burst=2)
+    )
+    await admission._condition.acquire()
+    first = asyncio.create_task(admission.acquire("pending-one.example"))
+    second = asyncio.create_task(admission.acquire("pending-two.example"))
+    for _ in range(1_000):
+        if admission.pending_acquires == admission.max_pending_acquires:
+            break
+        await asyncio.sleep(0)
+    assert admission.pending_acquires == 2
+    with pytest.raises(AdmissionRejectedError, match="pending capacity is full"):
+        await admission.acquire("pending-three.example")
+    admission._condition.release()
+    await asyncio.wait_for(first, timeout=2)
+    assert admission.active_requests == 1
+    assert admission.queued_requests == 1
+    await admission.release("pending-one.example")
+    await asyncio.wait_for(second, timeout=2)
+    await admission.release("pending-two.example")
+    assert admission.pending_acquires == 0
+    assert admission.active_requests == 0
+    assert admission.queued_requests == 0
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_uses_monotonic_clock_and_has_bounded_wait() -> None:
     now = [10.0]
     admission = AdmissionController(
