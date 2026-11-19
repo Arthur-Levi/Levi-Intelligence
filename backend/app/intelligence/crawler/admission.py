@@ -6,7 +6,6 @@ import asyncio
 import math
 import threading
 import time
-import weakref
 from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -84,9 +83,19 @@ class AdmissionController:
         self.config = config or AdmissionConfig()
         self._clock = clock
         self._condition = asyncio.Condition()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_lock = threading.Lock()
         self._states: dict[str, _HostState] = {}
         self._waiters: deque[_Waiter] = deque()
         self._active = 0
+
+    def _bind_to_running_loop(self) -> None:
+        loop = asyncio.get_running_loop()
+        with self._loop_lock:
+            if self._loop is None:
+                self._loop = loop
+            elif self._loop is not loop:
+                raise RuntimeError("AdmissionController cannot be shared across event loops")
 
     @property
     def active_requests(self) -> int:
@@ -176,6 +185,7 @@ class AdmissionController:
         return min(delays) if delays else None
 
     async def acquire(self, hostname: str) -> None:
+        self._bind_to_running_loop()
         key = self.normalize_hostname(hostname)
         async with self._condition:
             now = self._clock()
@@ -238,6 +248,7 @@ class AdmissionController:
                 raise
 
     async def release(self, hostname: str) -> None:
+        self._bind_to_running_loop()
         key = self.normalize_hostname(hostname)
         async with self._condition:
             state = self._states.get(key)
@@ -251,6 +262,7 @@ class AdmissionController:
 
     async def notify_clock_advanced(self) -> None:
         """Wake queued tasks after an injected test clock advances."""
+        self._bind_to_running_loop()
         async with self._condition:
             self._condition.notify_all()
 
@@ -273,25 +285,16 @@ class AdmissionController:
                 raise asyncio.CancelledError
 
 
-DEFAULT_ADMISSION_CONTROLLER = AdmissionController()
-
-_DEFAULT_CONTROLLERS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, AdmissionController] = (
-    weakref.WeakKeyDictionary()
-)
-_DEFAULT_CONTROLLERS_LOCK = threading.Lock()
-
-
 def get_default_admission_controller() -> AdmissionController:
     """Return the shared process-local controller for the current event loop.
 
-    The service runs one asyncio loop per worker process. Separate loops receive
-    separate controllers because asyncio synchronization primitives cannot safely
-    coordinate across loops or threads.
+    Separate event loops receive separate controllers because asyncio
+    synchronization primitives cannot safely coordinate across loops or threads.
     """
     loop = asyncio.get_running_loop()
-    with _DEFAULT_CONTROLLERS_LOCK:
-        controller = _DEFAULT_CONTROLLERS.get(loop)
-        if controller is None:
-            controller = AdmissionController()
-            _DEFAULT_CONTROLLERS[loop] = controller
-        return controller
+    loop_attributes = vars(loop)
+    controller = loop_attributes.get("_levi_crawler_admission_controller")
+    if controller is None:
+        controller = AdmissionController()
+        loop_attributes["_levi_crawler_admission_controller"] = controller
+    return controller

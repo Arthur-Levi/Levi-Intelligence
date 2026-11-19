@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 
 import aiohttp
 
+from .admission import AdmissionController, get_default_admission_controller
 from .dns_guard import DNSGuard, PinnedResolver
 from .exceptions import (
     FetchError,
@@ -40,6 +41,7 @@ class SecureHTTPTransport:
         timeout_seconds: float = 8.0,
         max_response_bytes: int = 500_000,
         max_redirects: int = 5,
+        admission_controller: AdmissionController | None = None,
     ) -> None:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and greater than zero")
@@ -52,11 +54,12 @@ class SecureHTTPTransport:
         self._timeout_seconds = timeout_seconds
         self._max_response_bytes = max_response_bytes
         self._max_redirects = max_redirects
+        self._admission = admission_controller
 
     async def fetch(self, url: str) -> FetchResponse:
         current = validate_url(url)
         for redirect_count in range(self._max_redirects + 1):
-            response = await self._request_once(current)
+            response = await self._request_admitted(current)
             location = response.headers.get("location")
             if response.status not in REDIRECT_STATUSES or location is None:
                 return response
@@ -64,6 +67,11 @@ class SecureHTTPTransport:
                 raise TooManyRedirectsError("Redirect limit exceeded")
             current = validate_url(urljoin(current.url, location))
         raise TooManyRedirectsError("Redirect limit exceeded")
+
+    async def _request_admitted(self, target: ValidatedURL) -> FetchResponse:
+        admission = self._admission or get_default_admission_controller()
+        async with admission.request(target.hostname):
+            return await self._request_once(target)
 
     async def _request_once(self, target: ValidatedURL) -> FetchResponse:
         timeout = aiohttp.ClientTimeout(

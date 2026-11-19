@@ -54,10 +54,10 @@ or cancelled requests; connector/session/resolver initialization and cleanup err
 | Cancellation cleanup | TESTED | Synthetic blocked stream is cancelled; session, connector, and owned guard close |
 | IPv4/IPv6 adversarial DNS matrix and URL variations | TESTED | Synthetic resolver/unit inputs; no connection attempted |
 | Network behavior against real sockets/TLS/DNS | NOT VERIFIED | Prohibited in this gate and unavailable in restricted environment |
-| Global/per-domain concurrency and pending-task caps | NOT IMPLEMENTED | No admission-control mechanism found |
-| Rate limiting | NOT IMPLEMENTED | No limiter found |
-| robots.txt enforcement | NOT IMPLEMENTED | Exception type exists, enforcement does not |
-| Stable crawler identity | IMPLEMENTED | Fixed User-Agent in transport; delivery not independently verified |
+| Global/per-domain concurrency and bounded pending-work caps | IMPLEMENTED | Gate 1B loop-local controller; see `BUILD_006A_GATE_1B_ADMISSION_AND_ROBOTS.md` |
+| Per-host rate limiting | IMPLEMENTED | Gate 1B token bucket; synthetic monotonic-clock test |
+| robots.txt enforcement | NOT VERIFIED for Gate 1B.2 | Outside this gate's validation scope; this update makes no implementation claim |
+| Stable crawler identity | IMPLEMENTED | Fixed `LeviIntelligenceBot` policy/header identity; real delivery NOT VERIFIED |
 | Egress/network isolation and host resource limits | NOT VERIFIED | Requires deployment/host evidence |
 
 ## Adversarial test matrix
@@ -76,7 +76,9 @@ Mocks and synthetic answers are not evidence of network-level SSRF prevention.
 ## Operational acceptance and egress requirements
 
 The execution environment must provide and document all of the following before
-beta release:
+beta release. Gate 1B implements repository-level admission controls, which are
+local to one event loop and are not distributed controls. Gate 1B.2 does not assess
+robots.txt:
 
 - Outbound network policy blocks loopback, private, link-local, and reserved
   destinations, including IPv4-mapped IPv6 and cloud metadata endpoints.
@@ -85,8 +87,10 @@ beta release:
 - Crawler process/container isolation from application data services and internal
   control planes; no Docker socket access.
 - Enforced CPU, memory, file descriptor, socket, and task limits.
-- Per-domain and global concurrency limits, pending-work limits, and rate limits.
-- robots.txt policy and a documented crawler identity/contact policy.
+- Distributed per-domain/global concurrency and rate limits if multiple workers
+  must share one aggregate budget.
+- A documented crawler contact policy; the fixed identity is `LeviIntelligenceBot`
+  and does not include a contact URL.
 
 No firewall, Codespace network, host, or infrastructure configuration was changed
 for this gate. These controls are NOT VERIFIED from repository inspection.
@@ -121,6 +125,20 @@ PostgreSQL integration test was skipped by its own guard because no dedicated te
 database was configured. The earlier interrupted full-suite attempt is not counted
 as a pass or a completed failure result.
 
+## Gate 1B validation evidence
+
+These results were collected during Gate 1B implementation. Tests used synthetic
+responses and controlled resolver/clock inputs; no internet, private service, or
+persistent database was accessed.
+
+| Command | Actual result | Scope / exclusions |
+|---|---|---|
+| `pytest -q tests/intelligence/crawler` | PASS — 148 passed | Historical Gate 1B run on the then-current crawler test tree |
+| `ruff check app/intelligence/crawler tests/intelligence/crawler app/services/company_enrichment.py` | PASS | No lint findings |
+| `mypy app/intelligence/crawler app/services/company_enrichment.py` | PASS — 9 source files checked | No type findings |
+| `pytest -q --ignore=tests/test_health.py` | PASS — 165 passed, 1 skipped | PostgreSQL integration skipped because `TEST_DATABASE_URL` is unset |
+| `pytest -q` | INTERRUPTED; no final suite result | Progress reached 85%, then stalled in the final portion; interrupted, not a PASS. `test_health.py` includes loopback `TestClient` tests. |
+
 During the initial crawler matrix, Python 3.14 reported `224.0.0.1` as
 `ipaddress.is_global == True`. The original guard therefore accepted a multicast
 answer. The guard now explicitly rejects multicast addresses, with IPv4 and IPv6
@@ -133,8 +151,10 @@ network enforcement.
   returning an unintended globally routable address.
 - The test suite uses mocks and cannot prove live TLS, DNS pinning, firewall
   enforcement, or routing behavior.
-- No concurrency cap, pending-task limit, rate limit, or robots.txt enforcement
-  exists in the reviewed crawler path.
+- Admission state is event-loop local. It does not coordinate workers and has no
+  trusted tenant-specific isolation.
+- Robots.txt behavior, enforcement, and parser conformance were outside Gate 1B.2
+  and are NOT VERIFIED here. The crawler identity has no contact URL.
 - Deployment evidence for egress blocks, process isolation, Docker socket absence,
   and CPU/memory limits is required before beta release.
 
@@ -144,5 +164,42 @@ network enforcement.
 streaming, and tested cleanup paths pass their available synthetic tests. The
 multicast acceptance defect found in testing was corrected and its regression test
 passes. Live network behavior and deployment egress/isolation remain NOT VERIFIED;
-global/per-domain concurrency, pending-work and rate limits, and robots.txt
-enforcement are NOT IMPLEMENTED. These blockers prevent global Gate 1 approval.
+Gate 1B admission controls are IMPLEMENTED and TESTED within the synthetic test
+boundary. Gate 1B.2 does not claim robots.txt implementation or validation. Live
+network behavior, deployment egress/isolation, process resource limits,
+distributed coordination, and tenant-level isolation remain NOT VERIFIED or NOT
+IMPLEMENTED as listed above. These blockers prevent global Gate 1 approval.
+
+## Gate 1B.2 status
+
+### IMPLEMENTED
+
+- Process-local global and per-host request limits, a bounded waiter queue, and
+  bounded hostname state with safe eviction conditions.
+- Per-host token-bucket rate limiting and a maximum admission wait.
+- `SecureHTTPTransport.fetch()` admits each request and redirect hop. Company
+  enrichment calls this supported transport path.
+- Default controller sharing is scoped to the running event loop. Explicit
+  controllers reject cross-loop use.
+
+### TESTED
+
+- Admission, HTTP transport, company enrichment, and crawler test results are
+  recorded in `BUILD_006A_GATE_1B_ADMISSION.md`.
+- Tests use synthetic transports and do not access the internet, real sockets, or
+  persistent databases.
+
+### VERIFIED
+
+- Source inspection found one `aiohttp` request call, within `_request_once()`,
+  reached from the admitted transport path. Each manually followed redirect loops
+  back through the same path.
+- The validated URL, DNS guard, pinned resolver, TLS, and proxy-disabled transport
+  configuration remain in place.
+
+### NOT VERIFIED
+
+- Aggregate controls across processes, workers, containers, or hosts.
+- Live network, DNS, TLS, routing, or deployment egress behavior.
+- Robots.txt behavior in Gate 1B.2; no implementation status is claimed here.
+- Tenant-specific admission isolation.

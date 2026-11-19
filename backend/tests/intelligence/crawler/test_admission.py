@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
@@ -8,6 +9,7 @@ from app.intelligence.crawler.admission import (
     AdmissionConfig,
     AdmissionController,
     AdmissionRejectedError,
+    get_default_admission_controller,
 )
 
 
@@ -236,3 +238,38 @@ async def test_second_cancellation_during_release_does_not_leak_capacity() -> No
     with pytest.raises(asyncio.CancelledError):
         await task
     assert admission.active_requests == 0
+
+
+@pytest.mark.asyncio
+async def test_controller_rejects_cross_loop_use_and_defaults_are_loop_local() -> None:
+    admission = AdmissionController(AdmissionConfig(burst=4))
+    await admission.acquire("loop.example")
+    await admission.release("loop.example")
+
+    def use_from_another_loop() -> None:
+        with pytest.raises(RuntimeError, match="cannot be shared across event loops"):
+            asyncio.run(admission.acquire("loop.example"))
+
+    thread = threading.Thread(target=use_from_another_loop)
+    thread.start()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+    default_here = get_default_admission_controller()
+
+    defaults: list[tuple[AdmissionController, AdmissionController]] = []
+
+    def get_default_from_another_loop() -> None:
+        async def get_twice() -> tuple[AdmissionController, AdmissionController]:
+            first = get_default_admission_controller()
+            return first, get_default_admission_controller()
+
+        defaults.append(asyncio.run(get_twice()))
+
+    thread = threading.Thread(target=get_default_from_another_loop)
+    thread.start()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    default_there, default_there_again = defaults[0]
+    assert default_here is not default_there
+    assert default_there is default_there_again
