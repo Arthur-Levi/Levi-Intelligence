@@ -295,12 +295,15 @@ async def enrich_company(
         raise HTTPException(status_code=502, detail="Website verification failed") from None
     company.website_status = result["status"]
     company.website_checked_at = result["checked_at"]
-    company.last_verified_at = result["checked_at"]
+    if result["status"] != "http_error":
+        company.last_verified_at = result["checked_at"]
     if not company.email and result.get("emails"):
         company.email = result["emails"][0]
     if not company.phone and result.get("phones"):
         company.phone = result["phones"][0]
-    company.enrichment_status = "completed"
+    company.enrichment_status = (
+        "failed" if result["status"] == "http_error" else "completed"
+    )
     company.qualification_score, company.qualification_reasons = qualify_company(company)
     session.add(SourceRecord(tenant_id=context.tenant.id, company_id=company.id,
         source_type="website_verification", source_name="company_website", source_url=company.website_url,
