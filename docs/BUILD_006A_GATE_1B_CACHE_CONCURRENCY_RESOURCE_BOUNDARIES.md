@@ -28,7 +28,7 @@ timeout, and manual redirect count.
 | Admission controller | Default 16 active globally; 2 per host; 64 queue waiters; 2,048 host states; 30 second wait; derived pending cap 80 | Bound active and queued transport work; reject saturation; release on failures/cancellation | Calls could accumulate at the `Condition` lock before the explicit queue limit was checked | Added pre-await `pending_acquires` cap; held-condition saturation/recovery test |
 | HTTP transport | Default timeout 8 seconds; response cap 500,000 bytes; 5 redirects | Bound each request and clean resources for every outcome | No live network or infrastructure evidence; synthetic transport coverage only | Existing timeout, DNS/HTTP failure, response cap, redirect, cancellation and cleanup tests pass |
 | Internal references | Cache, inflight, pending calls, admission queue and host table are finite | No stale inflight entries, waiters or pending counters after completion | No residual state observed in tested failure/cancellation paths | Integrated saturation, timeout, eviction and recovery; assert counters after drain |
-| Event-loop ownership | Robots defaults use weak loop keys; admission defaults attach to each loop | No default cache/lock/task sharing or retained closed-loop reference | No cross-process coordination; custom policy instances are intended for one loop at a time | Two sequential `asyncio.run` loops, independent policies/cache, closed-loop collection; existing admission cross-loop rejection test |
+| Event-loop ownership | Defaults are stored on their loop; each policy records a weak reference to its first loop | No default cache/lock/Future/inflight sharing; explicit cross-loop use is rejected | No cross-process coordination | Same-loop reuse, custom-policy rejection on a second loop, independent defaults/cache, and closed-loop collection |
 
 ## Corrections implemented
 
@@ -52,9 +52,26 @@ still allocate task objects before those tasks begin executing the bounded
 coroutine; upstream task creation and process memory belong to the caller/runtime
 boundary.
 
+`RobotsPolicy` now binds to its first running loop. Reuse on that loop is
+supported; calls from any other loop raise `RuntimeError` before touching cache,
+lock, Future, or inflight state. The owner loop is held by weak reference. The
+default policy is stored as an attribute on its event loop instead of as a value
+in a weak-key registry; this avoids a registry value retaining its key through
+asyncio synchronization primitives. Separate loops therefore receive separate
+default caches, and the registry creates no global strong reference to closed
+loops.
+
+Single-flight cleanup now runs in a narrowly scoped task shielded from repeated
+cancellation of its caller. The caller loops until cleanup finishes, observes
+the cleanup task result, and then re-raises the original `CancelledError`.
+Leader cancellation removes the matching inflight entry and resolves its shared
+Future with the retry marker; waiter cancellation decrements its waiter count
+under the same lock. The cleanup task is never detached or left unobserved.
+
 ## Adversarial test evidence
 
-Added ten tests across `backend/tests/intelligence/crawler/` in
+Added thirteen Gate 1B.4 adversarial tests across
+`backend/tests/intelligence/crawler/` in
 `test_robots_resource_boundaries.py` and `test_admission.py`. They use synthetic
 responses, events, held locks, controlled clocks, and bounded event-loop turns;
 no network requests are made. Coverage includes:
@@ -62,17 +79,21 @@ no network requests are made. Coverage includes:
 - 80-origin cache fill against capacity 7, LRU promotion, TTL expiration,
   concurrent fills/eviction, failure not cached, and valid retry.
 - Same-origin single-flight, distinct-origin simultaneous loads, inflight and
-  waiter saturation, leader cancellation, multiple waiter cancellation, and
-  recovery without residual flights/counters.
+  waiter saturation, leader cancellation, repeated leader cancellation while
+  cleanup is blocked on the policy lock, multiple waiter cancellation, and
+  recovery without residual flights/counters. The repeated-cancel test verifies
+  that the old shared Future is resolved, the waiter retries successfully, and
+  no cleanup task remains pending.
 - Internal lock/condition contention at their derived pending caps, with
   deterministic rejection before overflow and recovery after release.
 - Integrated 12-origin saturation, gated synthetic responses, a synthetic
   timeout, cache eviction, and successful retry. Limits and counters are
   asserted during and after the run.
 - Independent default robots policies across two sequential event loops,
-  isolated cache objects, and collection of closed loops. Existing tests also
-  verify admission defaults are loop-local and explicit controllers reject
-  cross-loop use.
+  isolated cache objects, and collection of closed loops. Custom policy tests
+  verify first-loop binding, same-loop reuse, and explicit cross-loop rejection.
+  Existing tests also verify admission defaults are loop-local and explicit
+  controllers reject cross-loop use.
 
 The tests assert state invariants, including cache size, inflight count, waiter
 count, active requests, queued requests, pending calls, and eventual slot
@@ -85,7 +106,7 @@ Executed on the final implementation and tests:
 
 | Command | Result |
 |---|---|
-| `pytest -q tests/intelligence/crawler` from `backend/` | **169 passed** in 1.55 seconds; 0 failed, 0 skipped |
+| `pytest -q tests/intelligence/crawler` from `backend/` | **172 passed**; 0 failed, 0 skipped |
 | `ruff check app/intelligence/crawler tests/intelligence/crawler` from `backend/` | **Passed**, all checks passed |
 | `mypy app/intelligence/crawler` from `backend/` | **Passed**, no issues in 8 source files |
 
@@ -108,9 +129,11 @@ before final validation. The results above are from the final code/test run.
 - Integrated volume is bounded (24 synthetic host identities and 12 concurrent
   initial checks) and completes in seconds. It is not a memory profiling
   benchmark; no byte-level memory claim is made.
-- Repeated cancellation exactly while acquiring the lock for single-flight
-  cleanup was not separately stress-tested. Tests cover leader cancellation,
-  waiter cancellation, transport cancellation, and admission cancellation/release.
+- Repeated cancellation during single-flight cleanup is covered by one
+  deterministic blocked-lock scenario. An unbounded cancellation storm or
+  event-loop shutdown during cleanup is outside the test evidence. Tests also
+  cover waiter cancellation, transport cancellation, and admission
+  cancellation/release.
 
 ## Approval criteria and decision
 

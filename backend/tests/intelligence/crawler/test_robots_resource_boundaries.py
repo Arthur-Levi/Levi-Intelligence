@@ -159,6 +159,69 @@ async def test_singleflight_saturation_and_cancelled_leader_recover() -> None:
 
 
 @pytest.mark.asyncio
+async def test_repeated_leader_cancellation_cannot_interrupt_flight_cleanup() -> None:
+    policy = RobotsPolicy()
+    fetch_started = asyncio.Event()
+    cancel_fetch = asyncio.Event()
+    retry_started = asyncio.Event()
+    attempts = 0
+
+    async def fetcher(url: str) -> FetchResponse:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            fetch_started.set()
+            await cancel_fetch.wait()
+        else:
+            retry_started.set()
+        return _response()
+
+    origin_url = "https://repeat-cancel.synthetic.com/page"
+    leader = asyncio.create_task(policy.check(origin_url, fetcher))
+    await fetch_started.wait()
+    origin = "https://repeat-cancel.synthetic.com"
+    waiter = asyncio.create_task(policy.check(origin_url, fetcher))
+    await _wait_for(lambda: policy._inflight[origin].waiters == 1)
+    flight = policy._inflight[origin]
+
+    await policy._lock.acquire()
+    leader.cancel()
+    await _wait_for(lambda: bool(policy._lock._waiters))
+    assert not leader.done()
+
+    # Task cancellation is queued before lock release; the second cancellation
+    # is delivered while the shielded cleanup task is still waiting for the lock.
+    leader.cancel()
+    loop = asyncio.get_running_loop()
+    lock_released = asyncio.Event()
+
+    def release_policy_lock() -> None:
+        policy._lock.release()
+        lock_released.set()
+
+    loop.call_soon(release_policy_lock)
+    await lock_released.wait()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(leader, timeout=2)
+    await asyncio.wait_for(waiter, timeout=2)
+    await retry_started.wait()
+
+    assert attempts == 2
+    assert flight.future.done()
+    assert flight.future.result() is None
+    assert flight.waiters == 0
+    assert policy.inflight_origins == 0
+    assert policy._inflight == {}
+    assert policy.pending_checks == 0
+    assert policy.cached_origins == 1
+    assert not any(
+        task.get_name() == "robots-policy-cleanup"
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task()
+    )
+
+
+@pytest.mark.asyncio
 async def test_policy_lock_contention_has_a_finite_pending_check_limit() -> None:
     policy = RobotsPolicy(max_inflight_origins=1, max_waiters_per_origin=2)
     await policy._lock.acquire()
@@ -305,22 +368,66 @@ async def test_integrated_saturation_timeout_eviction_and_recovery() -> None:
     assert policy.inflight_origins == 0
 
 
+@pytest.mark.asyncio
+async def test_custom_policy_binds_to_first_loop_and_allows_reuse_on_that_loop() -> None:
+    policy = RobotsPolicy()
+    calls = 0
+
+    async def fetcher(url: str) -> FetchResponse:
+        nonlocal calls
+        calls += 1
+        return _response()
+
+    url = "https://owner.synthetic.com/page"
+    await policy.check(url, fetcher)
+    await policy.check(url, fetcher)
+    assert policy._loop_ref is not None
+    assert policy._loop_ref() is asyncio.get_running_loop()
+    assert calls == 1
+
+
+def test_custom_policy_rejects_use_from_another_loop() -> None:
+    policy = RobotsPolicy()
+
+    async def use_policy() -> None:
+        await policy.check("https://cross-loop.synthetic.com/", _response_fetcher)
+
+    asyncio.run(use_policy())
+    with pytest.raises(RuntimeError, match="cannot be shared across event loops"):
+        asyncio.run(use_policy())
+    assert policy.cached_origins == 1
+    assert policy.inflight_origins == 0
+
+
+async def _response_fetcher(url: str) -> FetchResponse:
+    return _response()
+
+
 def test_default_robots_policies_and_cache_are_isolated_between_event_loops() -> None:
-    policies: list[object] = []
+    policies: list[RobotsPolicy] = []
+    cache_keys: list[tuple[str, ...]] = []
+    policy_refs: list[weakref.ReferenceType[RobotsPolicy]] = []
     loop_refs: list[weakref.ReferenceType[asyncio.AbstractEventLoop]] = []
 
-    def create_policy() -> None:
+    def create_policy(hostname: str) -> None:
         async def get_policy() -> None:
             policy = get_default_robots_policy()
             policies.append(policy)
+            policy_refs.append(weakref.ref(policy))
+            await policy.check(f"https://{hostname}/", _response_fetcher)
+            cache_keys.append(tuple(policy._cache))
             loop_refs.append(weakref.ref(asyncio.get_running_loop()))
 
         asyncio.run(get_policy())
 
-    create_policy()
-    create_policy()
+    create_policy("first-loop.synthetic.com")
+    create_policy("second-loop.synthetic.com")
     assert policies[0] is not policies[1]
-    assert policies[0]._cache == {}
-    assert policies[1]._cache == {}
+    assert cache_keys == [
+        ("https://first-loop.synthetic.com",),
+        ("https://second-loop.synthetic.com",),
+    ]
+    policies.clear()
     gc.collect()
     assert all(loop_ref() is None for loop_ref in loop_refs)
+    assert all(policy_ref() is None for policy_ref in policy_refs)

@@ -9,9 +9,9 @@ import threading
 import time
 import weakref
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from .exceptions import CrawlerSecurityError, RobotsDeniedError
@@ -21,6 +21,24 @@ if TYPE_CHECKING:
     from .http_transport import FetchResponse
 
 CRAWLER_USER_AGENT = "LeviIntelligenceBot"
+
+
+async def _await_cleanup(cleanup: Coroutine[Any, Any, None]) -> bool:
+    """Finish and observe cleanup despite repeated cancellation of the caller.
+
+    Returns whether cancellation arrived while waiting. The cleanup task is
+    always awaited to completion and its result observed, so it cannot become
+    an orphaned background task.
+    """
+    task = asyncio.create_task(cleanup, name="robots-policy-cleanup")
+    interrupted = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            interrupted = True
+    task.result()
+    return interrupted
 
 
 class RobotsPolicyError(CrawlerSecurityError):
@@ -224,6 +242,23 @@ class RobotsPolicy:
         self._inflight: dict[str, _Flight] = {}
         self._lock = asyncio.Lock()
         self._pending_checks = 0
+        self._loop_lock = threading.Lock()
+        self._loop_ref: weakref.ReferenceType[asyncio.AbstractEventLoop] | None = None
+        self._loop_was_bound = False
+
+    def _bind_to_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        with self._loop_lock:
+            owner = self._loop_ref() if self._loop_ref is not None else None
+            if not self._loop_was_bound:
+                self._loop_ref = weakref.ref(loop)
+                self._loop_was_bound = True
+            elif owner is not loop:
+                raise RuntimeError("RobotsPolicy cannot be shared across event loops")
+
+    def _bind_to_running_loop(self) -> asyncio.AbstractEventLoop:
+        loop = asyncio.get_running_loop()
+        self._bind_to_loop(loop)
+        return loop
 
     @property
     def cached_origins(self) -> int:
@@ -298,9 +333,13 @@ class RobotsPolicy:
             if not owner:
                 try:
                     result = await asyncio.shield(flight.future)
-                finally:
-                    async with self._lock:
-                        flight.waiters = max(0, flight.waiters - 1)
+                except asyncio.CancelledError:
+                    await _await_cleanup(self._release_waiter(flight))
+                    raise
+                else:
+                    interrupted = await _await_cleanup(self._release_waiter(flight))
+                    if interrupted:
+                        raise asyncio.CancelledError
                 if result is None:
                     continue
                 rules, error = result
@@ -312,12 +351,17 @@ class RobotsPolicy:
             try:
                 response = await fetcher(robots_url)
                 rules = self._interpret(response)
-            except asyncio.CancelledError:
                 async with self._lock:
                     if self._inflight.get(origin) is flight:
                         del self._inflight[origin]
+                    self._cache[origin] = _CacheEntry(self._clock() + self.ttl_seconds, rules)
+                    self._cache.move_to_end(origin)
+                    while len(self._cache) > self.max_entries:
+                        self._cache.popitem(last=False)
                     if not flight.future.done():
-                        flight.future.set_result(None)
+                        flight.future.set_result((rules, None))
+            except asyncio.CancelledError:
+                await _await_cleanup(self._finish_flight(origin, flight, None))
                 raise
             except Exception as exc:
                 error = exc if isinstance(exc, RobotsPolicyError) else RobotsPolicyError(
@@ -325,27 +369,34 @@ class RobotsPolicy:
                 )
                 if error is not exc:
                     error.__cause__ = exc
-                async with self._lock:
-                    if self._inflight.get(origin) is flight:
-                        del self._inflight[origin]
-                    if not flight.future.done():
-                        flight.future.set_result((None, error))
+                interrupted = await _await_cleanup(
+                    self._finish_flight(origin, flight, (None, error))
+                )
+                if interrupted:
+                    raise asyncio.CancelledError from None
                 if error is exc:
                     raise
                 raise error from exc
-
-            async with self._lock:
-                if self._inflight.get(origin) is flight:
-                    del self._inflight[origin]
-                self._cache[origin] = _CacheEntry(self._clock() + self.ttl_seconds, rules)
-                self._cache.move_to_end(origin)
-                while len(self._cache) > self.max_entries:
-                    self._cache.popitem(last=False)
-                if not flight.future.done():
-                    flight.future.set_result((rules, None))
             return rules
 
+    async def _release_waiter(self, flight: _Flight) -> None:
+        async with self._lock:
+            flight.waiters = max(0, flight.waiters - 1)
+
+    async def _finish_flight(
+        self,
+        origin: str,
+        flight: _Flight,
+        result: tuple[RobotsRules | None, BaseException | None] | None,
+    ) -> None:
+        async with self._lock:
+            if self._inflight.get(origin) is flight:
+                del self._inflight[origin]
+            if not flight.future.done():
+                flight.future.set_result(result)
+
     async def check(self, url: str, fetcher: RobotsFetcher) -> None:
+        self._bind_to_running_loop()
         origin, robots_url = self._origin_and_robots_url(url)
         # Count before the first await so callers cannot accumulate without
         # bound while queued on the policy lock itself.
@@ -369,18 +420,14 @@ class RobotsPolicy:
 
 DEFAULT_ROBOTS_POLICY = RobotsPolicy()
 
-_DEFAULT_POLICIES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, RobotsPolicy] = (
-    weakref.WeakKeyDictionary()
-)
-_DEFAULT_POLICIES_LOCK = threading.Lock()
-
 
 def get_default_robots_policy() -> RobotsPolicy:
     """Return the shared bounded policy cache for the current worker event loop."""
     loop = asyncio.get_running_loop()
-    with _DEFAULT_POLICIES_LOCK:
-        policy = _DEFAULT_POLICIES.get(loop)
-        if policy is None:
-            policy = RobotsPolicy()
-            _DEFAULT_POLICIES[loop] = policy
-        return policy
+    attributes = vars(loop)
+    policy = attributes.get("_levi_crawler_robots_policy")
+    if policy is None:
+        policy = RobotsPolicy()
+        attributes["_levi_crawler_robots_policy"] = policy
+    policy._bind_to_loop(loop)
+    return policy
