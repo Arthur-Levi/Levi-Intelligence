@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
@@ -40,6 +41,13 @@ class SecureHTTPTransport:
         max_response_bytes: int = 500_000,
         max_redirects: int = 5,
     ) -> None:
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be finite and greater than zero")
+        if max_response_bytes <= 0:
+            raise ValueError("max_response_bytes must be greater than zero")
+        if max_redirects < 0:
+            raise ValueError("max_redirects cannot be negative")
+
         self._dns_guard = dns_guard
         self._timeout_seconds = timeout_seconds
         self._max_response_bytes = max_response_bytes
@@ -61,6 +69,7 @@ class SecureHTTPTransport:
         timeout = aiohttp.ClientTimeout(
             total=self._timeout_seconds,
             sock_connect=min(4.0, self._timeout_seconds),
+            sock_read=self._timeout_seconds,
         )
         owns_guard = self._dns_guard is None
         dns_guard = self._dns_guard or DNSGuard()

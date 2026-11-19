@@ -44,6 +44,14 @@ Apify.
 
 ## Transport review and expanded tests
 
+`SecureHTTPTransport` rejects a non-finite or non-positive
+`timeout_seconds`, a non-positive `max_response_bytes`, and a negative
+`max_redirects` with `ValueError`. Existing defaults are unchanged. Its
+`aiohttp.ClientTimeout` sets `total` to `timeout_seconds`, `sock_connect` to the
+smaller of four seconds and that total, and `sock_read` to `timeout_seconds`.
+The total timeout bounds the whole request, including DNS and all response
+chunks; connect and read timeouts also bound their respective phases.
+
 The deeper transport review found that `aiohttp.ClientError` failures outside
 timeouts could escape the crawler exception hierarchy. This included connection
 failures and response payload/protocol errors, which callers such as company
@@ -54,11 +62,21 @@ Transport tests now cover streaming at and over the byte cap, bodies without a
 declared length, malformed/truncated payload errors, connection and read timeout
 translation, connection failure translation, redirects across hostnames with a
 new DNS resolution per hop, rejected redirect schemes, redirect chain limits,
-and session/connector/owned-resolver cleanup on failure. All new transport tests
-use mocks; no socket is opened. The test resolver returns a TEST-NET address
-and is never used to establish a connection. Existing DNS tests cover
-mixed and non-public IPv4/IPv6 answers, rebinding responses, and preservation of
-the request hostname for Host and TLS verification.
+and session/connector/owned-resolver cleanup on failure. Additional tests check
+invalid constructor settings; the effective `ClientTimeout` fields; an injected
+DNS guard reused across redirects and left open for its caller; repeat resolution
+of the same host; and DNS failure or non-public answers on a redirect.
+
+The `aiohttp.ClientTimeout` object and the production `DNSGuard`/
+`PinnedResolver` validation code are exercised directly. DNS tests supply
+controlled resolver answers. The HTTP session, streaming response, timeout and
+connection-error paths, redirect response sequence, and resource-close behavior
+use mocks. The TLS/Host test exercises aiohttp's connection setup arguments with
+the socket-opening method stubbed. No test opens a socket or proves behavior
+against a live network. The transport mock resolver uses a TEST-NET address and
+never establishes a connection. Existing DNS tests cover mixed and non-public
+IPv4/IPv6 answers, rebinding responses, and preservation of the request hostname
+for Host and TLS verification.
 
 The content-length mismatch case simulates the `aiohttp.ClientPayloadError`
 reported when a response body is shorter than declared. The transport's byte cap
@@ -68,15 +86,14 @@ or persistent databases were accessed.
 
 ## Validation results
 
-Results from the transport review run:
+Results from the configuration and transport review run:
 
-- `ruff check app/intelligence/crawler/exceptions.py
-  app/intelligence/crawler/http_transport.py
+- `ruff check app/intelligence/crawler/http_transport.py
   tests/intelligence/crawler/test_http_transport.py` — passed.
 - `mypy app/intelligence/crawler app/services/company_enrichment.py` — passed,
   6 source files checked.
-- `pytest -q tests/intelligence/crawler` — passed, 62 tests.
-- `pytest -q --ignore=tests/test_health.py` — passed, 79 tests; 1 PostgreSQL
+- `pytest -q tests/intelligence/crawler` — passed, 74 tests.
+- `pytest -q --ignore=tests/test_health.py` — passed, 91 tests; 1 PostgreSQL
   integration test skipped because `TEST_DATABASE_URL` was not configured.
 - An initial local-server attempt failed before exercising the transport: 9
   tests failed to bind loopback, while the other 53 crawler tests passed. The

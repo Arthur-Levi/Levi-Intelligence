@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import socket
 from collections.abc import AsyncIterator, Callable
 from urllib.parse import urlsplit
 
 import aiohttp
 import pytest
+from aiohttp.abc import AbstractResolver, ResolveResult
 
 from app.intelligence.crawler import http_transport
-from app.intelligence.crawler.dns_guard import PinnedResolver
+from app.intelligence.crawler.dns_guard import DNSGuard, PinnedResolver
 from app.intelligence.crawler.exceptions import (
+    DNSResolutionError,
     FetchError,
     FetchTimeoutError,
     ResponseTooLargeError,
@@ -45,6 +48,36 @@ class FakeDNSGuard:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class ControlledResolver(AbstractResolver):
+    def __init__(self, answers: list[list[ResolveResult] | OSError]) -> None:
+        self.answers = iter(answers)
+        self.hosts: list[str] = []
+        self.closed = False
+
+    async def resolve(
+        self, host: str, port: int = 0, family: int = socket.AF_INET
+    ) -> list[ResolveResult]:
+        self.hosts.append(host)
+        answer = next(self.answers)
+        if isinstance(answer, OSError):
+            raise answer
+        return answer
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def dns_record(address: str, hostname: str = "example.com") -> ResolveResult:
+    return ResolveResult(
+        hostname=hostname,
+        host=address,
+        port=80,
+        family=socket.AF_INET6 if ":" in address else socket.AF_INET,
+        proto=socket.IPPROTO_TCP,
+        flags=0,
+    )
 
 
 class FakeConnector:
@@ -176,6 +209,41 @@ def allow_test_urls(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(http_transport, "validate_url", validate)
 
 
+@pytest.mark.parametrize("timeout_seconds", [0, -0.1, float("nan"), float("inf")])
+def test_rejects_invalid_timeout_configuration(timeout_seconds: float) -> None:
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        SecureHTTPTransport(timeout_seconds=timeout_seconds)
+
+
+@pytest.mark.parametrize("max_response_bytes", [0, -1])
+def test_rejects_invalid_response_byte_limit(max_response_bytes: int) -> None:
+    with pytest.raises(ValueError, match="max_response_bytes"):
+        SecureHTTPTransport(max_response_bytes=max_response_bytes)
+
+
+def test_rejects_negative_redirect_limit() -> None:
+    with pytest.raises(ValueError, match="max_redirects"):
+        SecureHTTPTransport(max_redirects=-1)
+
+
+@pytest.mark.asyncio
+async def test_default_timeout_sets_total_connect_and_read_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions, _ = install_http_mocks(
+        monkeypatch, response_factory=lambda: FakeResponse(chunks=[b"ok"])
+    )
+    allow_test_urls(monkeypatch)
+
+    await SecureHTTPTransport().fetch("http://example.com/")
+
+    timeout = sessions[0].timeout
+    assert timeout is not None
+    assert timeout.total == 8.0
+    assert timeout.sock_connect == 4.0
+    assert timeout.sock_read == 8.0
+
+
 @pytest.mark.asyncio
 async def test_redirect_is_followed_manually_after_url_validation() -> None:
     transport = SyntheticTransport(
@@ -294,6 +362,7 @@ async def test_read_timeout_is_translated_and_owned_dns_resolver_closes(
     assert sessions[0].closed
     assert sessions[0].timeout is not None
     assert sessions[0].timeout.total == 0.02
+    assert sessions[0].timeout.sock_read == 0.02
 
 
 @pytest.mark.asyncio
@@ -341,6 +410,97 @@ async def test_redirect_to_another_hostname_re_resolves_dns(
     assert guards[0].hosts == ["example.com"]
     assert guards[1].hosts == ["other.example"]
     assert len(sessions) == 2
+
+
+@pytest.mark.asyncio
+async def test_injected_dns_guard_is_reused_and_remains_caller_owned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        [
+            FakeResponse(status=302, headers={"location": "http://other.example/next"}),
+            FakeResponse(chunks=[b"ok"]),
+        ]
+    )
+    install_http_mocks(monkeypatch, response_factory=lambda: next(responses))
+    allow_test_urls(monkeypatch)
+    guard = FakeDNSGuard()
+
+    result = await SecureHTTPTransport(dns_guard=guard).fetch("http://example.com/")
+
+    assert result.body == b"ok"
+    assert guard.hosts == ["example.com", "other.example"]
+    assert not guard.closed
+
+
+@pytest.mark.asyncio
+async def test_same_hostname_is_resolved_again_after_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        [
+            FakeResponse(status=302, headers={"location": "/next"}),
+            FakeResponse(chunks=[b"ok"]),
+        ]
+    )
+    install_http_mocks(monkeypatch, response_factory=lambda: next(responses))
+    allow_test_urls(monkeypatch)
+    guard = FakeDNSGuard()
+
+    await SecureHTTPTransport(dns_guard=guard).fetch("http://example.com/")
+
+    assert guard.hosts == ["example.com", "example.com"]
+    assert not guard.closed
+
+
+@pytest.mark.asyncio
+async def test_dns_failure_on_redirect_stops_before_following_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolver = ControlledResolver(
+        [[dns_record("8.8.8.8")], socket.gaierror("simulated DNS failure")]
+    )
+    responses = iter(
+        [
+            FakeResponse(status=302, headers={"location": "http://other.example/next"}),
+            FakeResponse(chunks=[b"must not be read"]),
+        ]
+    )
+    install_http_mocks(monkeypatch, response_factory=lambda: next(responses))
+    allow_test_urls(monkeypatch)
+
+    with pytest.raises(DNSResolutionError):
+        await SecureHTTPTransport(dns_guard=DNSGuard(resolver)).fetch(
+            "http://example.com/"
+        )
+
+    assert resolver.hosts == ["example.com", "other.example"]
+    assert not resolver.closed
+
+
+@pytest.mark.asyncio
+async def test_non_public_dns_answer_on_redirect_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolver = ControlledResolver(
+        [[dns_record("8.8.8.8")], [dns_record("192.168.1.20", "other.example")]]
+    )
+    responses = iter(
+        [
+            FakeResponse(status=302, headers={"location": "http://other.example/next"}),
+            FakeResponse(chunks=[b"must not be read"]),
+        ]
+    )
+    install_http_mocks(monkeypatch, response_factory=lambda: next(responses))
+    allow_test_urls(monkeypatch)
+
+    with pytest.raises(UnsafeTargetError):
+        await SecureHTTPTransport(dns_guard=DNSGuard(resolver)).fetch(
+            "http://example.com/"
+        )
+
+    assert resolver.hosts == ["example.com", "other.example"]
+    assert not resolver.closed
 
 
 @pytest.mark.asyncio
