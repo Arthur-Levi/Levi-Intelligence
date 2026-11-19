@@ -11,6 +11,22 @@ from app.intelligence.crawler.url_validator import ValidatedURL
 from app.services.company_enrichment import verify_and_extract
 
 
+class AllowRobots:
+    async def check(self, url: str, fetcher: object) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def isolate_optional_robots_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep these admission tests independent of pending robots changes."""
+    monkeypatch.setattr(
+        http_transport,
+        "get_default_robots_policy",
+        lambda: AllowRobots(),
+        raising=False,
+    )
+
+
 class AdmissionProbeTransport(SecureHTTPTransport):
     def __init__(self, admission: AdmissionController, responses: list[FetchResponse]) -> None:
         super().__init__(admission_controller=admission)
