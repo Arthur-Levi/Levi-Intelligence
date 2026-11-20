@@ -64,7 +64,12 @@ Resultados desta revisão:
   acima cobrem os testes diretamente relevantes para as mudanças.
 
 PostgreSQL e Docker não foram executados localmente. Nas execuções remotas 44741176309,
-44741560755 e 44741784432, o serviço iniciou e o preflight passou. As falhas sucessivas
-foram: criação duplicada do enum, UNIQUE composta ausente em `prospecting_runs` e UNIQUE
-composta ausente em `decision_makers`. Backend e frontend passaram nas três execuções.
-A validação desta última constraint e os testes de integração aguardam a próxima execução.
+44741560755 e 44741784432, o serviço iniciou e o preflight passou, mas migrations
+revelaram sucessivamente: criação duplicada do enum, UNIQUE composta ausente em
+`prospecting_runs` e UNIQUE composta ausente em `decision_makers`. Backend e frontend
+passaram nas três execuções.
+
+A execução remota 44742019345 confirmou as correções: o serviço PostgreSQL 16 iniciou,
+o preflight de identidade passou, as migrations 0001 a 0006 aplicaram, e a verificação
+do Alembic head e schema passou. Os 2 testes de integração passaram. Backend passou com
+Ruff e 214 testes; frontend passou com `npm ci` e build. Os três jobs concluíram PASS.
