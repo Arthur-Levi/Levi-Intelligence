@@ -16,9 +16,7 @@ class CrawlerJobRepository(Protocol):
 
     async def cancellation_requested(self, job_id: UUID, tenant_id: UUID) -> bool: ...
 
-    async def persist_result(
-        self, job: CrawlerJobInput, result: CrawlerJobResult
-    ) -> None: ...
+    async def persist_result(self, job: CrawlerJobInput, result: CrawlerJobResult) -> None: ...
 
     async def persist_failure(self, job: CrawlerJobInput, failure_code: str) -> None: ...
 
@@ -57,22 +55,47 @@ async def execute_crawler_job(
     if await repository.cancellation_requested(job.job_id, job.tenant_id):
         await repository.persist_cancellation(job)
         return "cancelled"
+
+    async def crawl_with_lease(url: str) -> dict[str, object]:
+        crawl_task: asyncio.Future[dict[str, object]] = asyncio.ensure_future(crawler(url))
+        heartbeat = getattr(repository, "heartbeat", None)
+        try:
+            while True:
+                done, _ = await asyncio.wait({crawl_task}, timeout=5)
+                if done:
+                    return await crawl_task
+                if await repository.cancellation_requested(job.job_id, job.tenant_id):
+                    crawl_task.cancel()
+                    await asyncio.gather(crawl_task, return_exceptions=True)
+                    raise asyncio.CancelledError
+                if heartbeat is not None and not await heartbeat(job):
+                    crawl_task.cancel()
+                    await asyncio.gather(crawl_task, return_exceptions=True)
+                    raise RuntimeError("crawler execution lease lost")
+        except BaseException:
+            if not crawl_task.done():
+                crawl_task.cancel()
+                await asyncio.gather(crawl_task, return_exceptions=True)
+            raise
+
     try:
         # The default injected callable is verify_and_extract; its URL validation,
         # DNSGuard/PinnedResolver, TLS, robots, admission, redirect and byte bounds remain intact.
-        raw_result = await crawler(job.website_url)
+        raw_result = await crawl_with_lease(job.website_url)
         result = CrawlerJobResult.model_validate(raw_result)
-        if await repository.cancellation_requested(job.job_id, job.tenant_id):
-            await repository.persist_cancellation(job)
-            return "cancelled"
-        await repository.persist_result(job, result)
-        return "completed"
     except UnsafeWebsiteError:
         await repository.persist_failure(job, "unsafe_website")
+        return "failed"
     except asyncio.CancelledError:
         await repository.persist_cancellation(job)
         raise
     except Exception:
         # Do not store exception text, which may contain URLs, response data, or secrets.
         await repository.persist_failure(job, "crawler_error")
-    return "failed"
+        return "failed"
+    if await repository.cancellation_requested(job.job_id, job.tenant_id):
+        await repository.persist_cancellation(job)
+        return "cancelled"
+    # Persistence failures propagate; they are not misclassified as crawl failures.
+    await repository.persist_result(job, result)
+    return "completed"

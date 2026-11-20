@@ -49,24 +49,36 @@ class MemoryRepository:
 
 def _job_input() -> CrawlerJobInput:
     return CrawlerJobInput(
-        job_id=uuid4(), tenant_id=uuid4(), company_id=uuid4(),
-        website_url="https://example.com", idempotency_key="request-0001",
+        job_id=uuid4(),
+        tenant_id=uuid4(),
+        company_id=uuid4(),
+        website_url="https://example.com",
+        idempotency_key="request-0001",
     )
 
 
 def test_job_creation_preserves_tenant_company_and_is_idempotent() -> None:
     tenant_id, company_id, actor_id = uuid4(), uuid4(), uuid4()
     first = build_crawler_job(
-        tenant_id=tenant_id, company_id=company_id, actor_user_id=actor_id,
-        website_url="https://example.com", idempotency_key="request-0001",
+        tenant_id=tenant_id,
+        company_id=company_id,
+        actor_user_id=actor_id,
+        website_url="https://example.com",
+        idempotency_key="request-0001",
     )
     retry = build_crawler_job(
-        tenant_id=tenant_id, company_id=company_id, actor_user_id=actor_id,
-        website_url="https://example.com", idempotency_key="request-0001",
+        tenant_id=tenant_id,
+        company_id=company_id,
+        actor_user_id=actor_id,
+        website_url="https://example.com",
+        idempotency_key="request-0001",
     )
     other_tenant = build_crawler_job(
-        tenant_id=uuid4(), company_id=company_id, actor_user_id=actor_id,
-        website_url="https://example.com", idempotency_key="request-0001",
+        tenant_id=uuid4(),
+        company_id=company_id,
+        actor_user_id=actor_id,
+        website_url="https://example.com",
+        idempotency_key="request-0001",
     )
     assert first.tenant_id == tenant_id and first.company_id == company_id
     assert first.request_fingerprint == retry.request_fingerprint
@@ -85,18 +97,24 @@ def test_tenant_scoped_job_lookup_requires_both_job_and_tenant() -> None:
 async def test_api_creates_auditable_tenant_company_job(monkeypatch) -> None:
     tenant_id, company_id, user_id = uuid4(), uuid4(), uuid4()
     company = SimpleNamespace(
-        id=company_id, tenant_id=tenant_id, website_url="https://example.com",
+        id=company_id,
+        tenant_id=tenant_id,
+        website_url="https://example.com",
         enrichment_status="pending",
     )
 
     class Session:
         def __init__(self) -> None:
             self.answers = [company, None]
+            self.count_answers = [0, 0]
             self.added: list[object] = []
             self.committed = False
 
         async def scalar(self, statement):
-            return self.answers.pop(0)
+            return self.answers.pop(0) if self.answers else 0
+
+        async def execute(self, statement):
+            return None
 
         def add(self, instance) -> None:
             self.added.append(instance)
@@ -119,12 +137,19 @@ async def test_api_creates_auditable_tenant_company_job(monkeypatch) -> None:
 
     monkeypatch.setattr(prospecting, "record_audit_event", no_audit)
     session = Session()
-    request = Request({
-        "type": "http", "method": "POST", "path": "/", "headers": [],
-        "client": ("127.0.0.1", 1),
-    })
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/",
+            "headers": [],
+            "client": ("127.0.0.1", 1),
+        }
+    )
     response = await prospecting.create_company_enrichment_job(
-        company_id, request, "request-0001",
+        company_id,
+        request,
+        "request-0001",
         SimpleNamespace(tenant=SimpleNamespace(id=tenant_id), user=SimpleNamespace(id=user_id)),
         session,
     )
@@ -160,14 +185,20 @@ async def test_cross_tenant_result_lookup_is_hidden_as_not_found() -> None:
 def test_payload_is_bounded_and_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError):
         CrawlerJobInput(
-            job_id=uuid4(), tenant_id=uuid4(), company_id=uuid4(),
-            website_url="https://example.com", idempotency_key="request-0001",
+            job_id=uuid4(),
+            tenant_id=uuid4(),
+            company_id=uuid4(),
+            website_url="https://example.com",
+            idempotency_key="request-0001",
             arbitrary_option="unexpected",
         )
     with pytest.raises(ValidationError):
         CrawlerJobInput(
-            job_id=uuid4(), tenant_id=uuid4(), company_id=uuid4(),
-            website_url="https://" + "a" * 600, idempotency_key="request-0001",
+            job_id=uuid4(),
+            tenant_id=uuid4(),
+            company_id=uuid4(),
+            website_url="https://" + "a" * 600,
+            idempotency_key="request-0001",
         )
 
 
@@ -186,8 +217,10 @@ async def test_worker_calls_injected_secure_service_and_persists_result() -> Non
     async def secure_crawler(url: str) -> dict[str, object]:
         calls.append(url)
         return {
-            "status": "verified", "status_code": 200,
-            "checked_at": datetime.now(UTC), "emails": ["hi@example.com"],
+            "status": "verified",
+            "status_code": 200,
+            "checked_at": datetime.now(UTC),
+            "emails": ["hi@example.com"],
         }
 
     state = await execute_crawler_job(job, repository=repository, crawler=secure_crawler)

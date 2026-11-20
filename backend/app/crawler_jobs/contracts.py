@@ -19,6 +19,7 @@ class CrawlerJobInput(BaseModel):
     company_id: UUID
     website_url: str = Field(min_length=8, max_length=500)
     idempotency_key: str = Field(min_length=8, max_length=128)
+    lease_token: UUID | None = None
 
 
 class CrawlerJobResult(BaseModel):

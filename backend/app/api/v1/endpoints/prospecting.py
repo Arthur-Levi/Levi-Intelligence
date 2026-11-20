@@ -4,7 +4,7 @@ from hashlib import sha256
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -308,6 +308,21 @@ async def create_company_enrichment_job(
                 detail="Idempotency-Key was already used with a different request",
             )
         return CrawlerJobResponse.model_validate(existing)
+
+    # Serialize admission decisions across API processes. Recheck idempotency first so
+    # a duplicate request remains idempotent even while the queue is at capacity.
+    await session.execute(text("SELECT pg_advisory_xact_lock(681204117)"))
+    queued_global = await session.scalar(select(func.count()).select_from(CrawlerJob).where(
+        CrawlerJob.status == CrawlerJobStatus.QUEUED,
+    ))
+    queued_tenant = await session.scalar(select(func.count()).select_from(CrawlerJob).where(
+        CrawlerJob.tenant_id == context.tenant.id,
+        CrawlerJob.status == CrawlerJobStatus.QUEUED,
+    ))
+    if (queued_global or 0) >= 10000:
+        raise HTTPException(status_code=429, detail={"code": "crawler_queue_full"})
+    if (queued_tenant or 0) >= 100:
+        raise HTTPException(status_code=429, detail={"code": "crawler_tenant_queue_full"})
 
     session.add(job)
     company.enrichment_status = "queued"
