@@ -37,21 +37,21 @@
 
 | Control | Real PostgreSQL integration test | Current evidence |
 |---|---|---|
-| Concurrent claims, repeated disputes | `test_claim_races_and_repeated_disputes`, `test_skip_locked_and_rollback_before_commit` | Awaiting Actions |
-| Tenant and attempt fencing | `test_tenant_and_attempt_fencing` | Awaiting Actions |
-| Cancellation | `test_cancel_revokes_running_lease_and_prevents_result`, `test_expired_cancel_and_retry_exhaustion` | Awaiting Actions |
-| Idempotency and conflict | `test_concurrent_idempotent_admission_and_conflict` | Awaiting Actions |
-| Queue and active capacity | `test_tenant_queue_capacity_and_release`, `test_global_and_tenant_active_capacity` | Awaiting Actions |
-| Renewal after blocked lock, completion/cancel race | `test_renewal_rechecks_expiry_after_row_lock`, `test_completion_cancel_race_has_one_terminal_winner` | Awaiting Actions |
-| Terminal idempotency | `test_terminal_idempotency_and_second_cancel` | Awaiting Actions |
+| Concurrent claims, repeated disputes | `test_claim_races_and_repeated_disputes`, `test_skip_locked_and_rollback_before_commit` | PASS in run 44751050356 |
+| Tenant and attempt fencing | `test_tenant_and_attempt_fencing` | PASS in run 44751050356 |
+| Cancellation | `test_cancel_revokes_running_lease_and_prevents_result`, `test_expired_cancel_and_retry_exhaustion` | PASS in run 44751050356 |
+| Idempotency and conflict | `test_concurrent_idempotent_admission_and_conflict` | PASS in run 44751050356 |
+| Queue and active capacity | `test_tenant_queue_capacity_and_release`, `test_global_and_tenant_active_capacity` | PASS in run 44751050356 |
+| Renewal after blocked lock, completion/cancel race | `test_renewal_rechecks_expiry_after_row_lock`, `test_completion_cancel_race_has_one_terminal_winner` | PASS in run 44751050356 |
+| Terminal idempotency | `test_terminal_idempotency_and_second_cancel` | PASS in run 44751050356 |
 
 All integration tests use the existing fail-closed CI preflight and create synthetic rows with explicit cleanup. Concurrent contenders use separate sessions and an event; the lock-holding test coordinates via an open transaction. Lease tests manipulate timestamps rather than waiting for wall-clock expiry. No real websites, commercial APIs or credentials are used.
 
-Local PostgreSQL execution is unavailable: Docker daemon access is denied. The Actions `postgres-integration` job is the required execution venue. Do not interpret a green unit suite as PostgreSQL evidence. Run `44750329352` had backend and frontend PASS, PostgreSQL FAIL (one test assertion; nine integration tests passed). Run [`44750602359`](https://github.com/Arthur-Levi/Levi-Intelligence/actions/runs/44750602359) had backend PASS (214 tests), PostgreSQL PASS (10 tests), and frontend PASS. The three later integration tests and expiry fix require a new Actions run.
+Local PostgreSQL execution is unavailable: Docker daemon access is denied. The Actions `postgres-integration` job is the required execution venue. Do not interpret a green unit suite as PostgreSQL evidence. Run `44750329352` had backend and frontend PASS, PostgreSQL FAIL (one test assertion; nine integration tests passed). Run [`44750602359`](https://github.com/Arthur-Levi/Levi-Intelligence/actions/runs/44750602359) had backend PASS (214 tests), PostgreSQL PASS (10 tests), and frontend PASS. Run [`44751050356`](https://github.com/Arthur-Levi/Levi-Intelligence/actions/runs/44751050356) had backend PASS (214 tests), PostgreSQL PASS (13 tests), frontend PASS, successful PostgreSQL 16 identity preflight and Alembic schema verification. The integration step executed `pytest -q tests/integration` and printed `13 passed in 1.96s`.
 
 ## Residual risks and acceptance decision
 
-- **PENDING** until the new PostgreSQL integration tests and all CI jobs complete and their logs confirm execution. No gate control is marked PASS yet.
+- **FAIL** for the overall Gate 1B.1. The tested invariants above have PostgreSQL evidence, but the remaining mandatory acceptance controls below do not. A successful workflow is not itself a gate approval.
 - Attempt history is represented only by count and current token; there is no durable per-attempt ledger. A separate worker identity field is absent.
 - Structured event coverage is incomplete; only claim and API audit events currently exist. Critical transaction safety does not depend on logging.
 - No dedicated database tests yet prove the global queue threshold at 10,000, connection loss, restart, or external side-effect compensation. These controls cannot receive PASS without further evidence.
