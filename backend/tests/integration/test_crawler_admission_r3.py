@@ -14,7 +14,7 @@ from sqlalchemy import delete, func, insert, select
 from test_postgres_crawler_lifecycle import add_jobs, context, request
 from test_postgres_crawler_lifecycle import world as shared_world  # noqa: F401
 
-from app.api.v1.endpoints.prospecting import create_company_enrichment_job
+from app.api.v1.endpoints.prospecting import create_company_enrichment_job, enrich_company
 from app.crawler_jobs.postgres import PostgresCrawlerJobRepository
 from app.models.identity import Tenant
 from app.models.prospecting import Company, CrawlerJob, CrawlerJobStatus
@@ -145,6 +145,14 @@ async def test_global_9999_to_10000_and_rejection(shared_world):  # noqa: F811
         async with factory() as session:
             assert await session.scalar(select(func.count()).select_from(CrawlerJob).where(
                 CrawlerJob.status == CrawlerJobStatus.QUEUED)) == 10000
+        legacy_context = await context(factory, tenants[winning_tenant], users[winning_tenant])
+        async with factory() as session, pytest.raises(HTTPException) as legacy_error:
+            await enrich_company(
+                companies[winning_tenant], request(), "b1-global-over-capacity",
+                legacy_context, session,
+            )
+        assert legacy_error.value.status_code == 429
+        assert legacy_error.value.detail == {"code": "crawler_queue_full"}
     finally:
         async with factory.begin() as session:
             await session.execute(delete(CrawlerJob).where(CrawlerJob.tenant_id.in_(extra_tenants)))
