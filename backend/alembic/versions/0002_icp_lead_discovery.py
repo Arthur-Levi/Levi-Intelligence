@@ -12,8 +12,24 @@ down_revision = "0001_identity"
 branch_labels = None
 depends_on = None
 
-run_status = sa.Enum("QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED", name="prospecting_run_status")
-company_status = sa.Enum("NEW", "QUALIFIED", "CONTACTED", "CUSTOMER", "DISQUALIFIED", name="company_status")
+run_status = sa.Enum(
+    "QUEUED",
+    "RUNNING",
+    "COMPLETED",
+    "FAILED",
+    "CANCELLED",
+    name="prospecting_run_status",
+    create_type=False,
+)
+company_status = sa.Enum(
+    "NEW",
+    "QUALIFIED",
+    "CONTACTED",
+    "CUSTOMER",
+    "DISQUALIFIED",
+    name="company_status",
+    create_type=False,
+)
 
 
 def upgrade() -> None:

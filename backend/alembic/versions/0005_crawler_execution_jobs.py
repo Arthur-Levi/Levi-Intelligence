@@ -13,7 +13,13 @@ branch_labels = None
 depends_on = None
 
 crawler_job_status = sa.Enum(
-    "QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED", name="crawler_job_status"
+    "QUEUED",
+    "RUNNING",
+    "COMPLETED",
+    "FAILED",
+    "CANCELLED",
+    name="crawler_job_status",
+    create_type=False,
 )
 
 

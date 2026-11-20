@@ -11,8 +11,25 @@ down_revision = "0003_discovery_enrichment"
 branch_labels = None
 depends_on = None
 
-role_enum = sa.Enum("OWNER", "PARTNER", "DIRECTOR", "MANAGER", "PROCUREMENT", "MARKETING", "OTHER", name="decision_maker_role")
-status_enum = sa.Enum("CURRENT", "UNCONFIRMED", "FORMER", "DISPUTED", name="decision_maker_status")
+role_enum = sa.Enum(
+    "OWNER",
+    "PARTNER",
+    "DIRECTOR",
+    "MANAGER",
+    "PROCUREMENT",
+    "MARKETING",
+    "OTHER",
+    name="decision_maker_role",
+    create_type=False,
+)
+status_enum = sa.Enum(
+    "CURRENT",
+    "UNCONFIRMED",
+    "FORMER",
+    "DISPUTED",
+    name="decision_maker_status",
+    create_type=False,
+)
 
 
 def upgrade() -> None:

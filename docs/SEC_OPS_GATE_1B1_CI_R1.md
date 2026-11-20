@@ -12,6 +12,9 @@
 - `ruff check app tests` reportava 246 problemas: imports/nomes não usados e ordenação,
   regras de estilo e comprimentos de linha, além do padrão `Depends(...)` do FastAPI
   apontado por `B008`.
+- Na primeira execução após a correção do loop, as migrations falharam porque os enums
+  PostgreSQL eram criados explicitamente com `checkfirst=True` e novamente pelo evento
+  automático do `sa.Enum` na criação/alteração das tabelas.
 
 ## Correções
 
@@ -22,6 +25,9 @@
   Erros de conexão continuam sem imprimir URL ou credenciais.
 - O teste de regressão cobre a ordem identidade → upgrade fora de loop → identidade →
   schema, substituindo conexões e Alembic por mocks; não exige PostgreSQL.
+- Os enums PostgreSQL das migrations 0002, 0004 e 0005 mantêm a criação explícita e
+  desativam a criação automática da coluna, evitando a tentativa duplicada de criar o
+  mesmo tipo.
 - `frontend/package-lock.json` foi gerado a partir do `package.json`; o workflow mantém
   `npm ci`. Os tipos de React/React DOM foram declarados em `devDependencies`, e
   `vite/client` foi habilitado no `tsconfig` para os imports CSS.
@@ -47,5 +53,8 @@ Resultados desta revisão:
 - A tentativa da suíte unitária completa não terminou neste ambiente; os resultados
   acima cobrem os testes diretamente relevantes para as mudanças.
 
-PostgreSQL e Docker não foram executados localmente. A validação de migrations e testes
-de integração só pode ser declarada após a execução real no GitHub Actions.
+PostgreSQL e Docker não foram executados localmente. Na execução remota 44741176309, o
+serviço PostgreSQL iniciou, o preflight passou, porém migration 0002 falhou com
+`type "prospecting_run_status" already exists` e os testes de integração foram pulados.
+Backend e frontend passaram nessa execução. A validação da correção de enums e os testes
+de integração aguardam uma nova execução no GitHub Actions.
