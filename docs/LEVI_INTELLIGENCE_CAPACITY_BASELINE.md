@@ -6,7 +6,7 @@ The current code admits at most **10,000 pending jobs globally** and **100 pendi
 
 ## Measured capacity
 
-No R2 benchmark has executed yet. Tested worker counts, throughput, latency, CPU, memory, PostgreSQL connections, lock waits, first bottleneck, saturation behavior and post-saturation recovery are **NOT MEASURED**. [CI run 44754873469](https://github.com/Arthur-Levi/Levi-Intelligence/actions/runs/44754873469) passed 16 PostgreSQL integration tests, but these prove selected correctness properties, not sustainable capacity. No maximum safe production capacity is claimed.
+The original R2 note recorded no executed benchmark. Later single-run observations are preserved in [the R2.1 contention investigation](SEC_OPS_GATE_1B1_R21_POSTGRES_CONTENTION.md). They are not a repeated scalability matrix or production capacity guarantee. [CI run 44754873469](https://github.com/Arthur-Levi/Levi-Intelligence/actions/runs/44754873469) passed 16 PostgreSQL integration tests, but these prove selected correctness properties, not sustainable capacity. No maximum safe production capacity is claimed.
 
 | Queue level | Workers | Completion throughput | Claim p95 | CPU / peak memory | Decision |
 |---:|---|---|---|---|---|

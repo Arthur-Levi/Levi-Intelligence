@@ -12,6 +12,15 @@ on:
         type: choice
         options: ['1', '2', '4', '8']
         default: '2'
+      repetition:
+        description: Matrix repetition label (run each worker count three times)
+        type: choice
+        options: ['1', '2', '3']
+        default: '1'
+      revision:
+        description: Exact feature-branch commit SHA for a reproducible matrix
+        type: string
+        required: false
 permissions:
   contents: read
 concurrency:
@@ -42,6 +51,8 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision || github.sha }}
       - run: pip install -e '.[dev]'
       - name: Verify disposable PostgreSQL identity
         run: python scripts/postgres_ci.py preflight
@@ -52,7 +63,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: crawler-capacity-${{ github.run_id }}
+          name: crawler-capacity-w${{ inputs.workers }}-r${{ inputs.repetition }}-${{ github.run_id }}
           path: backend/capacity-report.json
           if-no-files-found: warn
           retention-days: 7
