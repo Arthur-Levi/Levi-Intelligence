@@ -146,11 +146,12 @@ async def test_global_9999_to_10000_and_rejection(shared_world):  # noqa: F811
             assert await session.scalar(select(func.count()).select_from(CrawlerJob).where(
                 CrawlerJob.status == CrawlerJobStatus.QUEUED)) == 10000
         legacy_context = await context(factory, tenants[winning_tenant], users[winning_tenant])
-        async with factory() as session, pytest.raises(HTTPException) as legacy_error:
-            await enrich_company(
-                companies[winning_tenant], request(), "b1-global-over-capacity",
-                legacy_context, session,
-            )
+        async with factory() as session:
+            with pytest.raises(HTTPException) as legacy_error:
+                await enrich_company(
+                    companies[winning_tenant], request(), "b1-global-over-capacity",
+                    legacy_context, session,
+                )
         assert legacy_error.value.status_code == 429
         assert legacy_error.value.detail == {"code": "crawler_queue_full"}
     finally:
