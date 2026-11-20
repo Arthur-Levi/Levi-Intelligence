@@ -4,7 +4,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from app.models.prospecting import CompanyStatus, DecisionMakerRole, DecisionMakerStatus, ProspectingRunStatus
+from app.crawler_jobs.contracts import CrawlerJobView
+from app.models.prospecting import (
+    CompanyStatus,
+    DecisionMakerRole,
+    DecisionMakerStatus,
+    ProspectingRunStatus,
+)
 
 
 class ICPProfileCreate(BaseModel):
@@ -113,6 +119,10 @@ class CompanyResponse(BaseModel):
     qualification_confidence: float | None = None
     qualification_breakdown: dict[str, Any] = Field(default_factory=dict)
     opportunity_score: int | None = None
+
+
+class CrawlerJobResponse(CrawlerJobView):
+    """Public API representation of an asynchronous website verification job."""
 
 
 class SourceRecordResponse(BaseModel):

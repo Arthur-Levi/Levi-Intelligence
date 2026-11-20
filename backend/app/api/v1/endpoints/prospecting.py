@@ -1,6 +1,6 @@
+import json
 from datetime import UTC, datetime
 from hashlib import sha256
-import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -10,10 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import TenantContext, require_permission
 from app.core.config import get_settings
+from app.crawler_jobs.contracts import build_crawler_job
 from app.db import get_db_session
 from app.models.prospecting import (
     Company,
     CompanyStatus,
+    CrawlerJob,
+    CrawlerJobStatus,
     DecisionMaker,
     ICPProfile,
     ProspectingRun,
@@ -24,6 +27,7 @@ from app.schemas.prospecting import (
     CompanyCreate,
     CompanyResponse,
     CompanyStatusUpdate,
+    CrawlerJobResponse,
     DecisionMakerCreate,
     DecisionMakerResponse,
     ICPProfileCreate,
@@ -33,10 +37,10 @@ from app.schemas.prospecting import (
     SourceRecordResponse,
 )
 from app.services.audit import record_audit_event
-from app.services.qualification import qualify_company, qualify_against_icp
-from app.services.company_normalization import normalize_company_name, normalize_website
 from app.services.company_enrichment import UnsafeWebsiteError, verify_and_extract
+from app.services.company_normalization import normalize_company_name, normalize_website
 from app.services.decision_maker_intelligence import classify_job_title, normalize_person_name
+from app.services.qualification import qualify_against_icp, qualify_company
 
 router = APIRouter(tags=["prospecting"])
 
@@ -270,6 +274,65 @@ async def list_companies(
     return [CompanyResponse.model_validate(row) for row in rows.all()]
 
 
+@router.post(
+    "/companies/{company_id}/enrich/jobs",
+    response_model=CrawlerJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_company_enrichment_job(
+    company_id: UUID,
+    request: Request,
+    idempotency_key: str = Header(min_length=8, max_length=128, alias="Idempotency-Key"),
+    context: TenantContext = Depends(require_permission("companies:write")),
+    session: AsyncSession = Depends(get_db_session),
+) -> CrawlerJobResponse:
+    company = await session.scalar(select(Company).where(
+        Company.id == company_id, Company.tenant_id == context.tenant.id
+    ))
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    if not company.website_url:
+        raise HTTPException(status_code=422, detail="Company has no website to verify")
+    job = build_crawler_job(
+        tenant_id=context.tenant.id, company_id=company.id, actor_user_id=context.user.id,
+        website_url=company.website_url, idempotency_key=idempotency_key,
+    )
+    existing = await session.scalar(select(CrawlerJob).where(
+        CrawlerJob.tenant_id == context.tenant.id,
+        CrawlerJob.idempotency_key == idempotency_key,
+    ))
+    if existing is not None:
+        if existing.request_fingerprint != job.request_fingerprint:
+            raise HTTPException(
+                status_code=409,
+                detail="Idempotency-Key was already used with a different request",
+            )
+        return CrawlerJobResponse.model_validate(existing)
+
+    session.add(job)
+    company.enrichment_status = "queued"
+    await session.flush()
+    await record_audit_event(
+        session, tenant_id=context.tenant.id, actor_user_id=context.user.id,
+        action="company.enrichment_queued", resource_type="crawler_job", resource_id=str(job.id),
+        details={"company_id": str(company.id)},
+        ip_address=request.client.host if request.client else None,
+    )
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        existing = await session.scalar(select(CrawlerJob).where(
+            CrawlerJob.tenant_id == context.tenant.id,
+            CrawlerJob.idempotency_key == idempotency_key,
+        ))
+        if existing is None or existing.request_fingerprint != job.request_fingerprint:
+            raise HTTPException(status_code=409, detail="Idempotency-Key conflict") from None
+        return CrawlerJobResponse.model_validate(existing)
+    await session.refresh(job)
+    return CrawlerJobResponse.model_validate(job)
+
+
 @router.post("/companies/{company_id}/enrich", response_model=CompanyResponse)
 async def enrich_company(
     company_id: UUID,
@@ -277,6 +340,7 @@ async def enrich_company(
     context: TenantContext = Depends(require_permission("companies:write")),
     session: AsyncSession = Depends(get_db_session),
 ) -> CompanyResponse:
+    """Compatibility route; clients should migrate to the asynchronous /enrich/jobs route."""
     company = await session.scalar(select(Company).where(
         Company.id == company_id, Company.tenant_id == context.tenant.id
     ))
@@ -301,20 +365,69 @@ async def enrich_company(
         company.email = result["emails"][0]
     if not company.phone and result.get("phones"):
         company.phone = result["phones"][0]
-    company.enrichment_status = (
-        "failed" if result["status"] == "http_error" else "completed"
-    )
+    company.enrichment_status = "failed" if result["status"] == "http_error" else "completed"
     company.qualification_score, company.qualification_reasons = qualify_company(company)
-    session.add(SourceRecord(tenant_id=context.tenant.id, company_id=company.id,
-        source_type="website_verification", source_name="company_website", source_url=company.website_url,
+    session.add(SourceRecord(
+        tenant_id=context.tenant.id, company_id=company.id, source_type="website_verification",
+        source_name="company_website", source_url=company.website_url,
         captured_data={"status": result["status"], "status_code": result.get("status_code"),
-            "emails_found": result.get("emails", []), "phones_found": result.get("phones", [])}))
-    await record_audit_event(session, tenant_id=context.tenant.id, actor_user_id=context.user.id,
+            "emails_found": result.get("emails", []), "phones_found": result.get("phones", [])},
+    ))
+    await record_audit_event(
+        session, tenant_id=context.tenant.id, actor_user_id=context.user.id,
         action="company.enriched", resource_type="company", resource_id=str(company.id),
-        details={"website_status": company.website_status}, ip_address=request.client.host if request.client else None)
+        details={"website_status": company.website_status},
+        ip_address=request.client.host if request.client else None,
+    )
     await session.commit()
     await session.refresh(company)
     return CompanyResponse.model_validate(company)
+
+
+@router.get("/crawler-jobs/{job_id}", response_model=CrawlerJobResponse)
+async def get_crawler_job(
+    job_id: UUID,
+    context: TenantContext = Depends(require_permission("companies:read")),
+    session: AsyncSession = Depends(get_db_session),
+) -> CrawlerJobResponse:
+    job = await session.scalar(select(CrawlerJob).where(
+        CrawlerJob.id == job_id, CrawlerJob.tenant_id == context.tenant.id
+    ))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Crawler job not found")
+    return CrawlerJobResponse.model_validate(job)
+
+
+@router.post("/crawler-jobs/{job_id}/cancel", response_model=CrawlerJobResponse)
+async def cancel_crawler_job(
+    job_id: UUID,
+    request: Request,
+    context: TenantContext = Depends(require_permission("companies:write")),
+    session: AsyncSession = Depends(get_db_session),
+) -> CrawlerJobResponse:
+    job = await session.scalar(select(CrawlerJob).where(
+        CrawlerJob.id == job_id, CrawlerJob.tenant_id == context.tenant.id
+    ).with_for_update())
+    if job is None:
+        raise HTTPException(status_code=404, detail="Crawler job not found")
+    if job.status in {
+        CrawlerJobStatus.COMPLETED,
+        CrawlerJobStatus.FAILED,
+        CrawlerJobStatus.CANCELLED,
+    }:
+        raise HTTPException(status_code=409, detail="A terminal crawler job cannot be cancelled")
+    job.cancel_requested_at = datetime.now(UTC)
+    if job.status == CrawlerJobStatus.QUEUED:
+        job.status = CrawlerJobStatus.CANCELLED
+        job.finished_at = datetime.now(UTC)
+    await record_audit_event(
+        session, tenant_id=context.tenant.id, actor_user_id=context.user.id,
+        action="crawler_job.cancel_requested", resource_type="crawler_job", resource_id=str(job.id),
+        ip_address=request.client.host if request.client else None,
+    )
+    await session.commit()
+    await session.refresh(job)
+    return CrawlerJobResponse.model_validate(job)
 
 
 @router.post("/companies/{company_id}/qualify/{icp_id}", response_model=CompanyResponse)

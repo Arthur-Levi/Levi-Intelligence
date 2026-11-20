@@ -3,13 +3,35 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, ForeignKey, Index, JSON, String, Text, UniqueConstraint, Uuid, ForeignKeyConstraint, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKey
 
 
 class ProspectingRunStatus(str, enum.Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class CrawlerJobStatus(str, enum.Enum):
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -134,6 +156,45 @@ class Company(UUIDPrimaryKey, TimestampMixin, Base):
 
     decision_makers: Mapped[list["DecisionMaker"]] = relationship(back_populates="company", cascade="all, delete-orphan")
     source_records: Mapped[list["SourceRecord"]] = relationship(back_populates="company", cascade="all, delete-orphan")
+
+
+class CrawlerJob(UUIDPrimaryKey, TimestampMixin, Base):
+    """Durable, tenant-authorized request for one company website verification."""
+
+    __tablename__ = "crawler_jobs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_crawler_jobs_tenant_id_id"),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_crawler_jobs_tenant_idempotency"),
+        ForeignKeyConstraint(
+            ["tenant_id", "company_id"],
+            ["companies.tenant_id", "companies.id"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_crawler_jobs_status_created", "status", "created_at"),
+    )
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    company_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    website_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[CrawlerJobStatus] = mapped_column(
+        Enum(CrawlerJobStatus, name="crawler_job_status"),
+        default=CrawlerJobStatus.QUEUED,
+        nullable=False,
+    )
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class DecisionMaker(UUIDPrimaryKey, TimestampMixin, Base):
