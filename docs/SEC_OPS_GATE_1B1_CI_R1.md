@@ -15,6 +15,9 @@
 - Na primeira execução após a correção do loop, as migrations falharam porque os enums
   PostgreSQL eram criados explicitamente com `checkfirst=True` e novamente pelo evento
   automático do `sa.Enum` na criação/alteração das tabelas.
+- Na segunda execução, a migration 0002 chegou à criação de `source_records` e falhou
+  porque a chave estrangeira composta `(tenant_id, prospecting_run_id)` referenciava
+  `(tenant_id, id)` sem uma constraint UNIQUE correspondente em `prospecting_runs`.
 
 ## Correções
 
@@ -28,6 +31,8 @@
 - Os enums PostgreSQL das migrations 0002, 0004 e 0005 mantêm a criação explícita e
   desativam a criação automática da coluna, evitando a tentativa duplicada de criar o
   mesmo tipo.
+- A migration 0002 agora cria a constraint UNIQUE composta de `prospecting_runs`, em
+  conformidade com a chave estrangeira e com o modelo ORM.
 - `frontend/package-lock.json` foi gerado a partir do `package.json`; o workflow mantém
   `npm ci`. Os tipos de React/React DOM foram declarados em `devDependencies`, e
   `vite/client` foi habilitado no `tsconfig` para os imports CSS.
@@ -53,8 +58,8 @@ Resultados desta revisão:
 - A tentativa da suíte unitária completa não terminou neste ambiente; os resultados
   acima cobrem os testes diretamente relevantes para as mudanças.
 
-PostgreSQL e Docker não foram executados localmente. Na execução remota 44741176309, o
-serviço PostgreSQL iniciou, o preflight passou, porém migration 0002 falhou com
-`type "prospecting_run_status" already exists` e os testes de integração foram pulados.
-Backend e frontend passaram nessa execução. A validação da correção de enums e os testes
-de integração aguardam uma nova execução no GitHub Actions.
+PostgreSQL e Docker não foram executados localmente. Nas execuções remotas 44741176309 e
+44741560755, o serviço iniciou e o preflight passou. A primeira falhou pela criação
+duplicada do enum; a segunda revelou a constraint UNIQUE composta ausente em
+`prospecting_runs`. Backend e frontend passaram em ambas. A correção da constraint e os
+testes de integração aguardam a execução remota seguinte.

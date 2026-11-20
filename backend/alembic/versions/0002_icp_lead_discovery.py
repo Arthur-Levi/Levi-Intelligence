@@ -81,6 +81,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["tenant_id", "icp_profile_id"], ["icp_profiles.tenant_id", "icp_profiles.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["tenant_id"], ["tenants.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_prospecting_runs")),
+        sa.UniqueConstraint("tenant_id", "id", name="uq_prospecting_runs_tenant_id_id"),
     )
     op.create_index("ix_prospecting_runs_tenant_created", "prospecting_runs", ["tenant_id", "created_at"])
 
