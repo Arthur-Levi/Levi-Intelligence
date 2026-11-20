@@ -2,7 +2,7 @@
 
 ## Scope and decision
 
-This gate measures synthetic PostgreSQL lifecycle processing. It does not measure website fetching, admission throughput, production load, or sustained crawling capacity. The 12-run matrix is complete at commit `8ff241d765d7144e1c5ec3d7ca1c4b66237f3e67`. Acceptance remains **INCONCLUSIVE** pending a green feature-branch CI result and server-side query/transaction timing evidence.
+This gate measures synthetic PostgreSQL lifecycle processing. It does not measure website fetching, admission throughput, production load, or sustained crawling capacity. The 12-run matrix is complete at commit `8ff241d765d7144e1c5ec3d7ca1c4b66237f3e67`. Feature-branch CI run `44768052992` passed backend, postgres-integration and frontend. The directed timing evidence below closes the lock-versus-query question for this synthetic completion workload.
 
 ## Observed baseline (single runs)
 
@@ -22,7 +22,7 @@ These are supplied single-run observations from the prior harness. That harness 
 
 `PostgresCrawlerJobRepository.claim_next()` takes the same transaction-scoped lock before recovering up to 32 expired leases. Each recovered row may require an attempt lookup and an update. It then counts active jobs globally, selects and locks up to 64 queued candidates, counts active jobs for each candidate until one has room, inserts an attempt, flushes, and commits. The lock remains held until the transaction ends on every return path. Consequently concurrent claims, and admissions racing with claims, serialize at this lock. The lock protects the global 8-active and tenant 2-active decisions as one atomic claim transaction. Row locks additionally protect selected jobs; completion and heartbeat use row locks and lease-token checks but do not acquire the global advisory lock.
 
-The 64-candidate query uses the `(status, created_at)` index for queue order but filters cancel state, retry time, attempts and optional tenant after that. The recovery query has status and lease-expiry predicates but no matching composite index. Candidate scanning can perform one tenant count per examined candidate. These are potential query and round-trip costs, especially when the first queued tenants are full. They also lengthen the advisory-lock hold. An `EXPLAIN (ANALYZE, BUFFERS)` on a disposable populated fixture and measured lock-hold / transaction durations are required before ranking query cost against lock serialization. The current benchmark samples wait states but does not directly time server-side lock hold duration or query execution; claim wall latency includes pool checkout, lock wait, SQL, ORM and Python scheduling.
+The 64-candidate query filters cancel state, retry time and attempts, then orders by creation time and tenant. The recovery query has status and lease-expiry predicates but no matching composite index. Candidate scanning can perform one tenant count per examined candidate. These costs lengthen the advisory-lock hold. The original benchmark samples wait states but does not time lock hold or SQL; the directed probes below add timing and plans.
 
 `pg_locks` sampling now classifies a waiting session with an ungranted advisory lock as advisory, and an ungranted non-advisory lock as other. `pg_stat_activity.wait_event_type` and `wait_event` are reported as bounded counts of session snapshots. A row lock can surface as a transaction-id wait, so “other” is not proof of a particular row. Sampling at 100 ms misses short waits and can observe the same wait repeatedly. The sample query itself adds load. Peak connections and active counts are sampled, not continuous maxima. Process CPU uses the `resource.getrusage(RUSAGE_SELF)` user/system delta and excludes PostgreSQL CPU. Process memory is its high-water RSS on Linux.
 
@@ -32,9 +32,36 @@ The global advisory lock is a **structural serialization point** for claims. The
 
 Any later lock change must preserve atomic global and tenant active counts, row selection, attempt generation, lease ownership, fencing against stale writes, retry limits and rollback behavior across processes. Gate R2.1 makes no lock or lifecycle changes.
 
-## Gate 1B.1-R3 work
+## Directed PostgreSQL 16 timing probes
 
-1. Capture sanitized `EXPLAIN (ANALYZE, BUFFERS)` for the claim and recovery queries with the 1,000-job fixture, plus transaction/lock-hold timings using disposable-only instrumentation.
-2. Exercise concurrent admission, stale writes, lease expiry/retry recovery and failure paths in a separate bounded workload; this completion-only benchmark marks them NOT TESTED.
-3. Compare database-side CPU and pool checkout time before proposing an index or claim algorithm change.
-4. Repeat the matrix on an independent runner with a fresh PostgreSQL process per run to quantify cache and runner effects.
+One additional 1,000-job run each at 2, 4 and 8 workers used a disposable PostgreSQL 16 container with a 512 MiB tmpfs, a 2-CPU Python runner and the same fixture cleanup and identity preflight as the matrix. These are directed observations, not extra matrix repetitions. The [individual probe JSON files](../backend/capacity-r21/) contain the plans, bounded telemetry and integrity checks. Timings use SQLAlchemy cursor execution wall time. The claim transaction runs from the engine `begin` event to the `commit` request; lock hold runs from completion of `pg_advisory_xact_lock` to that request. They exclude the commit round trip and pool checkout. Advisory acquisition includes server wait, client round trip and scheduling; it is not a pure server wait measurement.
+
+| Workers | Throughput jobs/s | Claim p99 ms | Advisory acquire p50 / p99 ms | Lock hold p50 / p99 ms | Claim transaction p50 / p99 ms | Advisory wait samples |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2 | 70.447 | 36.144 | 1.104 / 6.224 | 8.795 / 22.929 | 10.051 / 29.469 | 2 |
+| 4 | 70.219 | 74.118 | 13.402 / 43.364 | 11.612 / 29.273 | 25.510 / 65.465 | 106 |
+| 8 | 66.031 | 169.623 | 69.404 / 142.176 | 12.408 / 30.980 | 82.183 / 158.765 | 614 |
+
+Across the runs, advisory acquisition medians rose much faster than lock-hold medians. At 8 workers, the 69.404 ms median acquisition accounted for most of the 82.183 ms median pre-commit transaction duration, though these separately calculated medians must not be subtracted as paired samples. This directly supports serialization at the advisory lock as the main cause of the added claim latency in this workload. It does not prove it is the only cost. Query and client work inside the critical section lengthen every competing worker's wait.
+
+| Workers | Recovery p50 ms | Selection p50 ms | Global count p50 ms | Tenant count p50 ms | Tenant count calls | Claim lock-hold total s |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2 | 0.823 | 1.676 | 0.685 | 0.679 | 1,000 | 9.704 |
+| 4 | 1.456 | 1.777 | 0.830 | 0.817 | 1,607 | 12.719 |
+| 8 | 1.590 | 1.780 | 0.856 | 0.887 | 1,650 | 13.573 |
+
+The per-cursor SQL timings include driver and network round trips, so they are upper bounds on server execution rather than pure SQL time. The cursor timing totals for recovery, selection, global and tenant counts, attempt insert and job update were 5.955, 8.466 and 8.974 seconds at 2, 4 and 8 workers, respectively. The corresponding pre-commit lock-hold totals were 9.704, 12.719 and 13.573 seconds. The residual includes ORM materialization, Python work, result fetching, driver round trips and scheduling; these measurements cannot apportion that residual further. More candidate tenant counts at 4 and 8 workers are consistent with full tenant slots causing extra checks.
+
+`EXPLAIN (ANALYZE, BUFFERS)` on the 1,000 queued-row fixture showed: recovery used `ix_crawler_jobs_claim`, 2 shared-hit buffers, 0.023 ms server execution; global active count used the same index, 2 shared-hit buffers, 0.015 ms; tenant active count used the same status index, 2 shared-hit buffers, 0.024 ms; selection used a sequential scan of 1,000 rows and a sort before locking 64 rows, 147 shared-hit buffers, 275 kB sort memory, 0.845 ms server execution. The selection plan had 0.096 ms planning time. At this fixture size, the planner favored a scan and sort over the `(status, created_at)` index because the query also orders by tenant and filters retry/cancel state. These plans explain measurable selection cost but do not explain the 8-worker acquisition rise by themselves. The fixture had no expired leases or active rows when plans were captured; recovery and running-count plans therefore do not establish costs under a populated running or expired set. No index change is justified by this evidence alone.
+
+All three directed runs completed 1,000 jobs with one source and one completed attempt per job, no duplicate completion, matching tenant IDs and cleared lease state. Sampled active counts remained within 8 global and 2 per tenant. Peak connections were 3, 5 and 9; peak Python RSS was 86,156, 87,064 and 89,144 KiB; durations were 14.195, 14.241 and 15.144 seconds. All remained within 12 connections, 512 MiB RSS and 60 seconds. These are sampled connection and active maxima. Admission, stale writes and failure recovery are covered by integration tests, not by these completion-only probes.
+
+**Provisional initial setting: 2 workers** for synthetic PostgreSQL lifecycle processing. It had the highest median throughput in the original matrix, almost no sampled advisory waits and the shortest claim tail in both the matrix and directed probes. Four workers did not improve throughput here, and eight worsened throughput and wait time. This setting is not a production crawler capacity claim.
+
+**Gate decision: PASS for the scoped synthetic PostgreSQL lifecycle configuration.** The measured acquisition growth and stable lower lock-hold times explain the observed contention sufficiently to support the provisional 2-worker setting. The twelve matrix runs and three directed probes passed integrity and resource checks; the prior feature-branch CI passed all three jobs, and the disposable PostgreSQL integration suite passed 16 tests during this closure. This decision does not claim production capacity or that all client/server overhead has been attributed.
+
+## Remaining limits and later work
+
+1. Measure recovery with a populated expired-lease fixture and admission with concurrent claims before changing indexes or the algorithm.
+2. Compare database-side CPU and pool checkout time before proposing an optimization.
+3. Repeat on an independent runner with a fresh PostgreSQL process per run to quantify cache and runner effects.

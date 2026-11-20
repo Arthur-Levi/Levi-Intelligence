@@ -1,0 +1,231 @@
+{
+  "scope": "disposable PostgreSQL 16; 1000 synthetic completion jobs; one directed run",
+  "workers": 4,
+  "commit": "ff2a10758c178fea3db6c47e4f5c203bf5edb53d",
+  "method": "SQLAlchemy cursor execution wall time, transaction begin to commit request, and advisory acquisition completion to commit request; excludes commit round trip and pool checkout",
+  "timings": {
+    "advisory_acquire": {
+      "count": 1004,
+      "total_ms": 15025.383,
+      "p50_ms": 13.402,
+      "p95_ms": 25.389,
+      "p99_ms": 43.364,
+      "max_ms": 81.014
+    },
+    "attempt_insert": {
+      "count": 1000,
+      "total_ms": 1088.155,
+      "p50_ms": 0.984,
+      "p95_ms": 2.067,
+      "p99_ms": 3.139,
+      "max_ms": 8.113
+    },
+    "claim_transaction_pre_commit": {
+      "count": 1004,
+      "total_ms": 27831.206,
+      "p50_ms": 25.51,
+      "p95_ms": 43.712,
+      "p99_ms": 65.465,
+      "max_ms": 108.228
+    },
+    "global_count": {
+      "count": 1004,
+      "total_ms": 978.603,
+      "p50_ms": 0.83,
+      "p95_ms": 1.933,
+      "p99_ms": 2.766,
+      "max_ms": 6.201
+    },
+    "job_update": {
+      "count": 1000,
+      "total_ms": 1070.864,
+      "p50_ms": 1.022,
+      "p95_ms": 2.013,
+      "p99_ms": 2.919,
+      "max_ms": 6.118
+    },
+    "lock_hold_pre_commit": {
+      "count": 1004,
+      "total_ms": 12718.522,
+      "p50_ms": 11.612,
+      "p95_ms": 19.959,
+      "p99_ms": 29.273,
+      "max_ms": 52.114
+    },
+    "recovery": {
+      "count": 1004,
+      "total_ms": 1580.658,
+      "p50_ms": 1.456,
+      "p95_ms": 2.429,
+      "p99_ms": 3.752,
+      "max_ms": 18.77
+    },
+    "selection": {
+      "count": 1004,
+      "total_ms": 2144.531,
+      "p50_ms": 1.777,
+      "p95_ms": 4.118,
+      "p99_ms": 7.651,
+      "max_ms": 17.106
+    },
+    "tenant_count": {
+      "count": 1607,
+      "total_ms": 1602.841,
+      "p50_ms": 0.817,
+      "p95_ms": 2.261,
+      "p99_ms": 3.67,
+      "max_ms": 7.592
+    }
+  },
+  "explain_analyze_buffers": {
+    "recovery": [
+      "Limit  (cost=0.28..6.06 rows=1 width=447) (actual time=0.005..0.005 rows=0 loops=1)",
+      "  Buffers: shared hit=2",
+      "  ->  LockRows  (cost=0.28..6.06 rows=1 width=447) (actual time=0.004..0.005 rows=0 loops=1)",
+      "        Buffers: shared hit=2",
+      "        ->  Index Scan using ix_crawler_jobs_claim on crawler_jobs  (cost=0.28..6.05 rows=1 width=447) (actual time=0.004..0.004 rows=0 loops=1)",
+      "              Index Cond: (status = 'RUNNING'::crawler_job_status)",
+      "              Filter: (lease_expires_at <= now())",
+      "              Buffers: shared hit=2",
+      "Planning:",
+      "  Buffers: shared hit=121",
+      "Planning Time: 0.262 ms",
+      "Execution Time: 0.024 ms"
+    ],
+    "selection": [
+      "Limit  (cost=190.00..190.80 rows=64 width=447) (actual time=0.946..0.984 rows=64 loops=1)",
+      "  Buffers: shared hit=199",
+      "  ->  LockRows  (cost=190.00..202.50 rows=1000 width=447) (actual time=0.945..0.978 rows=64 loops=1)",
+      "        Buffers: shared hit=199",
+      "        ->  Sort  (cost=190.00..192.50 rows=1000 width=447) (actual time=0.942..0.945 rows=64 loops=1)",
+      "              Sort Key: created_at, tenant_id",
+      "              Sort Method: quicksort  Memory: 275kB",
+      "              Buffers: shared hit=135",
+      "              ->  Seq Scan on crawler_jobs  (cost=0.00..155.00 rows=1000 width=447) (actual time=0.111..0.484 rows=1000 loops=1)",
+      "                    Filter: ((cancel_requested_at IS NULL) AND (attempts < 5) AND (status = 'QUEUED'::crawler_job_status) AND ((next_attempt_at IS NULL) OR (next_attempt_at <= now())))",
+      "                    Buffers: shared hit=135",
+      "Planning:",
+      "  Buffers: shared hit=9",
+      "Planning Time: 0.125 ms",
+      "Execution Time: 1.005 ms"
+    ],
+    "global_count": [
+      "Aggregate  (cost=6.05..6.06 rows=1 width=8) (actual time=0.005..0.005 rows=1 loops=1)",
+      "  Buffers: shared hit=2",
+      "  ->  Index Scan using ix_crawler_jobs_claim on crawler_jobs  (cost=0.28..6.05 rows=1 width=0) (actual time=0.003..0.003 rows=0 loops=1)",
+      "        Index Cond: (status = 'RUNNING'::crawler_job_status)",
+      "        Filter: (lease_expires_at > now())",
+      "        Buffers: shared hit=2",
+      "Planning:",
+      "  Buffers: shared hit=3",
+      "Planning Time: 0.087 ms",
+      "Execution Time: 0.016 ms"
+    ],
+    "tenant_count": [
+      "Aggregate  (cost=156.06..156.06 rows=1 width=8) (actual time=0.005..0.006 rows=1 loops=1)",
+      "  Buffers: shared hit=2",
+      "  InitPlan 1 (returns $0)",
+      "    ->  Limit  (cost=150.00..150.00 rows=1 width=24) (never executed)",
+      "          ->  Sort  (cost=150.00..152.50 rows=1000 width=24) (never executed)",
+      "                Sort Key: crawler_jobs_1.created_at",
+      "                ->  Seq Scan on crawler_jobs crawler_jobs_1  (cost=0.00..145.00 rows=1000 width=24) (never executed)",
+      "  ->  Index Scan using ix_crawler_jobs_claim on crawler_jobs  (cost=0.28..6.05 rows=1 width=0) (actual time=0.004..0.004 rows=0 loops=1)",
+      "        Index Cond: (status = 'RUNNING'::crawler_job_status)",
+      "        Filter: ((tenant_id = $0) AND (lease_expires_at > now()))",
+      "        Buffers: shared hit=2",
+      "Planning Time: 0.077 ms",
+      "Execution Time: 0.018 ms"
+    ]
+  },
+  "benchmark": {
+    "commit": "ff2a10758c178fea3db6c47e4f5c203bf5edb53d",
+    "postgresql": "16 (identity preflight)",
+    "runner": "Linux-6.8.0-1070-azure-x86_64-with-glibc2.36",
+    "workload": 1000,
+    "workers": 4,
+    "concurrency": 4,
+    "duration_s": 14.241,
+    "jobs_admitted": null,
+    "jobs_rejected": null,
+    "jobs_claimed": 1000,
+    "jobs_completed": 1000,
+    "jobs_failed": 0,
+    "jobs_cancelled": 0,
+    "duplicate_results": 0,
+    "stale_writes": null,
+    "throughput_jobs_s": 70.219,
+    "admission_latency_s": null,
+    "claim_latency_s": {
+      "p50": 0.032178,
+      "p95": 0.053625,
+      "p99": 0.074118
+    },
+    "completion_latency_s": {
+      "p50": 0.019954,
+      "p95": 0.029824,
+      "p99": 0.05179
+    },
+    "peak_memory_kib": 87064,
+    "peak_postgres_connections": 5,
+    "lock_wait_samples": 108,
+    "cpu_seconds": 11.463,
+    "cpu_system_seconds": 1.494,
+    "cpu_method": "process resource.getrusage delta; excludes PostgreSQL server CPU",
+    "lock_sampling_interval_ms": 100,
+    "lock_sampling_count": 119,
+    "lock_wait_semantics": "sum of waiting session snapshots; not distinct events",
+    "maximum_simultaneous_waiting_sessions": 3,
+    "advisory_lock_wait_samples": 106,
+    "other_lock_wait_samples": 2,
+    "unclassified_lock_wait_samples": 0,
+    "wait_event_samples": {
+      "wait_event_type:Lock": 108,
+      "wait_event:Lock:advisory": 106,
+      "lock_wait_samples": 108,
+      "advisory_lock_wait_samples": 106,
+      "wait_event_type:Client": 337,
+      "wait_event:Client:ClientRead": 337,
+      "wait_event:Lock:transactionid": 2,
+      "other_lock_wait_samples": 2
+    },
+    "peak_active_jobs_sampled": 2,
+    "peak_tenant_active_jobs_sampled": 2,
+    "claim_calls": 1004,
+    "claim_latency_samples": 1004,
+    "worker_fairness": {
+      "completed_per_worker": [
+        250,
+        250,
+        250,
+        250
+      ],
+      "min_max_ratio": 1.0,
+      "jain_index": 1.0
+    },
+    "integrity": {
+      "all_jobs_completed": "PASS",
+      "no_duplicate_results": "PASS",
+      "no_double_completion": "PASS",
+      "attempt_ledger": "PASS",
+      "lease_fencing_state": "PASS",
+      "tenant_isolation": "PASS",
+      "global_active_limit": "PASS",
+      "tenant_active_limit": "PASS",
+      "connection_ceiling": "PASS",
+      "memory_ceiling": "PASS",
+      "time_budget": "PASS",
+      "external_requests": "NOT TESTED",
+      "admission": "NOT TESTED",
+      "stale_writes": "NOT TESTED",
+      "failure_recovery": "NOT TESTED"
+    },
+    "python": "3.12.16",
+    "runner_cpu_count": 2,
+    "aborted": false,
+    "failure_classifications": [],
+    "fixture": "direct synthetic insert; admission API not measured",
+    "time_budget_s": 60,
+    "memory_ceiling_kib": 524288,
+    "connection_ceiling": 12
+  }
+}

@@ -127,7 +127,7 @@ def count_wait_snapshot(rows: Iterable[Sequence[object]]) -> tuple[Counter[str],
     return counts, waiting
 
 
-async def benchmark(size: int, workers: int, seconds: int) -> dict:
+async def benchmark(size: int, workers: int, seconds: int, fixture_ready=None) -> dict:
     url = test_database_url()
     await verify_identity(url)
     engine = create_async_engine(
@@ -196,6 +196,8 @@ async def benchmark(size: int, workers: int, seconds: int) -> dict:
                             request_fingerprint="0" * 64,
                         )
                     )
+        if fixture_ready is not None:
+            await fixture_ready(engine)
         peak_connections = 0
         stop_monitor = asyncio.Event()
 
