@@ -1,15 +1,26 @@
 import asyncio
+import os
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from alembic import context
 from app.core.config import get_settings
 from app.models import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
+
+
+def migration_database_url() -> str:
+    """Use an explicit CI test URL when supplied; otherwise retain app settings."""
+    test_url = os.environ.get("ALEMBIC_TEST_DATABASE_URL")
+    if test_url:
+        return test_url
+    return get_settings().database_url
+
+
+config.set_main_option("sqlalchemy.url", migration_database_url().replace("%", "%%"))
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 target_metadata = Base.metadata
@@ -17,7 +28,7 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=get_settings().database_url,
+        url=migration_database_url(),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},

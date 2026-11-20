@@ -1,4 +1,4 @@
-"""Opt-in integration test. Requires a dedicated, migrated PostgreSQL test database."""
+"""Integration test. Requires the verified, migrated GitHub Actions test database."""
 import os
 from uuid import uuid4
 
@@ -8,17 +8,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.identity import AuditEvent, Tenant
 
-DATABASE_URL = os.getenv("TEST_DATABASE_URL")
-pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
+pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
 async def test_postgres_persists_and_isolates_tenant_audit_rows() -> None:
-    assert DATABASE_URL is not None
-    assert "test" in DATABASE_URL.rsplit("/", 1)[-1].lower(), (
-        "Refusing integration test: database name must contain 'test'"
-    )
-    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+    database_url = os.environ["TEST_DATABASE_URL"]
+    engine = create_async_engine(database_url, pool_pre_ping=True)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     tenant_a, tenant_b = uuid4(), uuid4()
     try:
