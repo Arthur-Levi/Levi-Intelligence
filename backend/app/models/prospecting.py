@@ -238,6 +238,35 @@ class CrawlerJob(UUIDPrimaryKey, TimestampMixin, Base):
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class CrawlerJobAttempt(UUIDPrimaryKey, Base):
+    """One durable row per claim; never contains the bearer lease token."""
+
+    __tablename__ = "crawler_job_attempts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "job_id"],
+            ["crawler_jobs.tenant_id", "crawler_jobs.id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("tenant_id", "job_id", "generation", name="uq_crawler_attempt_generation"),
+        CheckConstraint(
+            "generation >= 1 AND generation <= 5", name="crawler_attempt_generation_range"
+        ),
+        CheckConstraint("renewal_count >= 0", name="crawler_attempt_renewals_nonnegative"),
+    )
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_renewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    renewal_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    outcome: Mapped[str] = mapped_column(String(24), default="running", nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(60))
+
+
 class DecisionMaker(UUIDPrimaryKey, TimestampMixin, Base):
     __tablename__ = "decision_makers"
     __table_args__ = (

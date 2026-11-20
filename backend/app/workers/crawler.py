@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import signal
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -23,6 +24,7 @@ async def run() -> None:
     engine = create_async_engine(database_url, pool_pre_ping=True, pool_size=concurrency)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     repository = PostgresCrawlerJobRepository(factory)
+    worker_id = uuid4()
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -32,12 +34,17 @@ async def run() -> None:
 
     async def work() -> None:
         async with semaphore:
-            job = await repository.claim_next()
+            job = await repository.claim_next(worker_id=worker_id)
             if job is None:
                 return
             logger.info(
                 "crawler_job_claimed",
-                extra={"job_id": str(job.job_id), "tenant_id": str(job.tenant_id)},
+                extra={
+                    "job_id": str(job.job_id),
+                    "tenant_id": str(job.tenant_id),
+                    "attempt_id": str(job.attempt_id),
+                    "worker_id": str(worker_id),
+                },
             )
             await execute_crawler_job(job, repository=repository, crawler=verify_and_extract)
 

@@ -7,7 +7,8 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException, Request
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.dependencies import TenantContext
@@ -19,7 +20,13 @@ from app.api.v1.endpoints.prospecting import (
 from app.crawler_jobs.contracts import CrawlerJobResult
 from app.crawler_jobs.postgres import PostgresCrawlerJobRepository
 from app.models.identity import AuditEvent, Membership, MembershipRole, Tenant, User
-from app.models.prospecting import Company, CrawlerJob, CrawlerJobStatus, SourceRecord
+from app.models.prospecting import (
+    Company,
+    CrawlerJob,
+    CrawlerJobAttempt,
+    CrawlerJobStatus,
+    SourceRecord,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -441,3 +448,132 @@ async def test_terminal_idempotency_and_second_cancel(world):
         with pytest.raises(HTTPException) as exc:
             await cancel_crawler_job(first.id, request(), ctx, session)
     assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_attempt_ledger_retry_fencing_and_rollback(world):
+    factory, tenants, users, companies = world
+    repo = PostgresCrawlerJobRepository(factory)
+    ids = await add_jobs(factory, tenants[0], users[0], companies[0])
+    worker = uuid4()
+    first = await repo.claim_next(tenants[0], worker_id=worker)
+    assert first is not None and first.attempt_id is not None and first.worker_id == worker
+    assert await repo.heartbeat(first)
+    async with factory() as session:
+        attempt = await session.get(CrawlerJobAttempt, first.attempt_id)
+        assert attempt.generation == 1 and attempt.renewal_count == 1
+        assert attempt.worker_id == worker and attempt.tenant_id == tenants[0]
+    async with factory.begin() as session:
+        row = await session.get(CrawlerJob, ids[0], with_for_update=True)
+        row.lease_expires_at = datetime.now(UTC) - timedelta(microseconds=1)
+    assert await repo.claim_next(tenants[0]) is None
+    async with factory.begin() as session:
+        row = await session.get(CrawlerJob, ids[0], with_for_update=True)
+        row.next_attempt_at = datetime.now(UTC) - timedelta(microseconds=1)
+    second = await repo.claim_next(tenants[0], worker_id=uuid4())
+    assert second is not None and second.attempt_id != first.attempt_id
+    with pytest.raises(RuntimeError, match="lease"):
+        await repo.persist_result(first, result())
+    await repo.persist_result(second, result())
+    async with factory() as session:
+        attempts = (
+            await session.scalars(
+                select(CrawlerJobAttempt)
+                .where(CrawlerJobAttempt.job_id == ids[0])
+                .order_by(CrawlerJobAttempt.generation)
+            )
+        ).all()
+        assert [row.outcome for row in attempts] == ["expired", "completed"]
+        assert [row.generation for row in attempts] == [1, 2]
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(SourceRecord)
+                .where(SourceRecord.tenant_id == tenants[0])
+            )
+            == 1
+        )
+    async with factory() as session:
+        with pytest.raises(RuntimeError):
+            async with session.begin():
+                session.add(
+                    CrawlerJobAttempt(
+                        tenant_id=tenants[0],
+                        job_id=ids[0],
+                        generation=3,
+                        claimed_at=datetime.now(UTC),
+                        outcome="running",
+                    )
+                )
+                await session.flush()
+                raise RuntimeError("rollback")
+    async with factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(CrawlerJobAttempt)
+                .where(CrawlerJobAttempt.job_id == ids[0])
+            )
+            == 2
+        )
+    with pytest.raises(IntegrityError):
+        async with factory.begin() as session:
+            session.add(CrawlerJobAttempt(
+                tenant_id=tenants[1], job_id=ids[0], generation=3,
+                claimed_at=datetime.now(UTC), outcome="running",
+            ))
+            await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_attempt_ledger_api_cancellation(world):
+    factory, tenants, users, companies = world
+    repo = PostgresCrawlerJobRepository(factory)
+    ids = await add_jobs(factory, tenants[0], users[0], companies[0])
+    claim = await repo.claim_next(tenants[0])
+    assert claim is not None
+    async with factory() as session:
+        await cancel_crawler_job(
+            ids[0], request(), await context(factory, tenants[0], users[0]), session
+        )
+    async with factory() as session:
+        attempt = await session.get(CrawlerJobAttempt, claim.attempt_id)
+        assert attempt.outcome == "cancelled" and attempt.ended_at is not None
+
+
+@pytest.mark.asyncio
+async def test_real_connection_loss_after_claim_commit_recovers(world):
+    """Terminate a disposable PostgreSQL backend; the committed lease remains fenced."""
+    factory, tenants, users, companies = world
+    repo = PostgresCrawlerJobRepository(factory)
+    ids = await add_jobs(factory, tenants[0], users[0], companies[0])
+    claim = await repo.claim_next(tenants[0])
+    assert claim is not None
+    async with factory() as victim:
+        pid = await victim.scalar(text("SELECT pg_backend_pid()"))
+        async with factory() as killer:
+            assert await killer.scalar(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
+        with pytest.raises(DBAPIError):
+            await victim.execute(text("SELECT 1"))
+    async with factory.begin() as session:
+        row = await session.get(CrawlerJob, ids[0], with_for_update=True)
+        assert row.status == CrawlerJobStatus.RUNNING
+        row.lease_expires_at = datetime.now(UTC) - timedelta(microseconds=1)
+    assert await repo.claim_next(tenants[0]) is None
+    async with factory.begin() as session:
+        row = await session.get(CrawlerJob, ids[0], with_for_update=True)
+        row.next_attempt_at = datetime.now(UTC) - timedelta(microseconds=1)
+    recovered = await repo.claim_next(tenants[0])
+    assert recovered is not None and recovered.lease_token != claim.lease_token
+    with pytest.raises(RuntimeError, match="lease"):
+        await repo.persist_result(claim, result())
+    await repo.persist_result(recovered, result())
+    async with factory() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(SourceRecord)
+                .where(SourceRecord.tenant_id == tenants[0])
+            )
+            == 1
+        )

@@ -18,7 +18,7 @@ EXPECTED_DATABASE = "levi_gate_1b1_ci"
 EXPECTED_USER = "levi_gate_1b1_ci"
 EXPECTED_HOST = "postgres"
 EXPECTED_PORT = 5432
-EXPECTED_ALEMBIC_HEAD = "0006_crawler_worker_leases"
+EXPECTED_ALEMBIC_HEAD = "0007_crawler_attempt_ledger"
 REQUIRED_CRAWLER_COLUMNS = {
     "attempts",
     "lease_token",
@@ -103,6 +103,15 @@ async def verify_schema(url: URL, config: Config) -> None:
                 )
             )
             column_rows: Sequence[object] = column_result.scalars().all()
+            attempt_rows = (
+                await connection.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema = current_schema() "
+                        "AND table_name = 'crawler_job_attempts'"
+                    )
+                )
+            ).scalars().all()
             revisions = [str(value) for value in revision_rows]
             columns = [str(value) for value in column_rows]
         if revisions != [EXPECTED_ALEMBIC_HEAD]:
@@ -110,6 +119,10 @@ async def verify_schema(url: URL, config: Config) -> None:
         missing_columns = REQUIRED_CRAWLER_COLUMNS.difference(columns)
         if missing_columns:
             raise RuntimeError("crawler lease schema is incomplete")
+        if not {"tenant_id", "job_id", "generation", "worker_id", "outcome"}.issubset(
+            set(attempt_rows)
+        ):
+            raise RuntimeError("crawler attempt ledger schema is incomplete")
     finally:
         await engine.dispose()
     print("Alembic head and crawler lease columns verified")

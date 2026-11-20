@@ -11,11 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import TenantContext, require_permission
 from app.core.config import get_settings
 from app.crawler_jobs.contracts import build_crawler_job
+from app.crawler_jobs.events import emit
 from app.db import get_db_session
 from app.models.prospecting import (
     Company,
     CompanyStatus,
     CrawlerJob,
+    CrawlerJobAttempt,
     CrawlerJobStatus,
     DecisionMaker,
     ICPProfile,
@@ -344,6 +346,12 @@ async def create_company_enrichment_job(
     )
     if existing is not None:
         if existing.request_fingerprint != job.request_fingerprint:
+            emit(
+                "idempotency_conflict",
+                tenant_id=context.tenant.id,
+                job_id=existing.id,
+                outcome="conflict",
+            )
             raise HTTPException(
                 status_code=409,
                 detail="Idempotency-Key was already used with a different request",
@@ -361,6 +369,12 @@ async def create_company_enrichment_job(
     )
     if existing is not None:
         if existing.request_fingerprint != job.request_fingerprint:
+            emit(
+                "idempotency_conflict",
+                tenant_id=context.tenant.id,
+                job_id=existing.id,
+                outcome="conflict",
+            )
             raise HTTPException(
                 status_code=409,
                 detail="Idempotency-Key was already used with a different request",
@@ -382,8 +396,10 @@ async def create_company_enrichment_job(
         )
     )
     if (queued_global or 0) >= 10000:
+        emit("capacity_rejection", tenant_id=context.tenant.id, outcome="rejected")
         raise HTTPException(status_code=429, detail={"code": "crawler_queue_full"})
     if (queued_tenant or 0) >= 100:
+        emit("capacity_rejection", tenant_id=context.tenant.id, outcome="rejected")
         raise HTTPException(status_code=429, detail={"code": "crawler_tenant_queue_full"})
 
     try:
@@ -413,6 +429,7 @@ async def create_company_enrichment_job(
             raise HTTPException(status_code=409, detail="Idempotency-Key conflict") from None
         return CrawlerJobResponse.model_validate(existing)
     await session.refresh(job)
+    emit("admission", tenant_id=context.tenant.id, job_id=job.id, outcome="accepted")
     return CrawlerJobResponse.model_validate(job)
 
 
@@ -519,6 +536,17 @@ async def cancel_crawler_job(
     job.finished_at = datetime.now(UTC)
     job.lease_token = None
     job.lease_expires_at = None
+    if job.attempts:
+        attempt = await session.scalar(
+            select(CrawlerJobAttempt).where(
+                CrawlerJobAttempt.tenant_id == job.tenant_id,
+                CrawlerJobAttempt.job_id == job.id,
+                CrawlerJobAttempt.generation == job.attempts,
+            )
+        )
+        if attempt is not None and attempt.ended_at is None:
+            attempt.ended_at = job.finished_at
+            attempt.outcome = "cancelled"
     await record_audit_event(
         session,
         tenant_id=context.tenant.id,
@@ -530,6 +558,7 @@ async def cancel_crawler_job(
     )
     await session.commit()
     await session.refresh(job)
+    emit("cancellation", tenant_id=context.tenant.id, job_id=job.id, outcome="cancelled")
     return CrawlerJobResponse.model_validate(job)
 
 
