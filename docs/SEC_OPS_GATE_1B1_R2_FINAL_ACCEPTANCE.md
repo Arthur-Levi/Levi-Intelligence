@@ -22,10 +22,10 @@ Diagnostic JSON lifecycle events use an allowlist of fields and outcomes. Admiss
 | Idempotency | API uniqueness and fingerprint | `test_concurrent_idempotent_admission_and_conflict`, PostgreSQL 16 CI | Run 44751050356 | PASS |
 | Cancellation | API row lock and lease revocation | `test_cancel_revokes_running_lease_and_prevents_result`, PostgreSQL 16 CI | Run 44751050356 | PASS for DB state |
 | Crash recovery | Expiry, bounded backoff | `test_expired_cancel_and_retry_exhaustion`, PostgreSQL 16 CI | Run 44751050356; no killed worker process test | BLOCKED |
-| Connection loss | Pool pre-ping and expiry | `test_real_connection_loss_after_claim_commit_recovers`, disposable PostgreSQL 16 CI | New test not yet run in CI; only one failure point covered | BLOCKED |
+| Connection loss | Pool pre-ping and expiry | `test_real_connection_loss_after_claim_commit_recovers`, disposable PostgreSQL 16 CI | Run 44754873469, real backend termination after claim; other failure points absent | BLOCKED overall |
 | Worker restart | Lease expiry route | No process restart integration test | Unverified | BLOCKED |
-| Attempt ledger | Alembic 0007, claim/recovery/terminal writes | `test_attempt_ledger_retry_fencing_and_rollback`, `test_attempt_ledger_api_cancellation`, PostgreSQL 16 CI | New tests pending CI | BLOCKED |
-| Structured observability | `crawler_jobs/events.py`, attempt ledger | `test_structured_event_allowlist_and_redaction`, unit; new PostgreSQL tests pending | Partial event coverage | BLOCKED |
+| Attempt ledger | Alembic 0007, claim/recovery/terminal writes | `test_attempt_ledger_retry_fencing_and_rollback`, `test_attempt_ledger_api_cancellation`, PostgreSQL 16 CI | Run 44754873469 | PASS for new claims; legacy attempts are not backfilled |
+| Structured observability | `crawler_jobs/events.py`, attempt ledger | `test_structured_event_allowlist_and_redaction`, unit; ledger tests, PostgreSQL 16 CI | Run 44754873469; no end-to-end event coverage assertion | BLOCKED |
 | Global queue ceiling | API 10,000 count | No real 10,000-row threshold test | Unverified | NOT MEASURED |
 | Per-tenant queue ceiling | API 100 count | `test_tenant_queue_capacity_and_release`, PostgreSQL 16 CI | Run 44751050356 | PASS |
 | Active concurrency limits | Repository count under advisory lock | `test_global_and_tenant_active_capacity`, PostgreSQL 16 CI | Run 44751050356 | PASS |
@@ -37,7 +37,7 @@ Diagnostic JSON lifecycle events use an allowlist of fields and outcomes. Admiss
 
 See [capacity baseline](LEVI_INTELLIGENCE_CAPACITY_BASELINE.md). The manual workflow produces a small JSON artifact retained seven days. No R2 capacity values are available until it executes. Synthetic direct inserts only measure subsequent claim and completion paths; they cannot prove admission throughput or the global queue boundary. No production capacity or performance SLO is asserted.
 
-Local R2 regression: 12 focused crawler unit tests passed; Ruff passed; mypy passed for changed backend modules; frontend build passed; `git diff --check` passed. The full 216-test unit suite reached `tests/test_health.py::test_liveness_returns_ok` (91%) and timed out after 120 seconds in the local Python 3.14 environment. This is not a full-suite pass. R2 PostgreSQL tests and migration have not yet run. Existing 13 PostgreSQL tests were preserved. Local Docker daemon access is denied, so local migration and PostgreSQL execution are unavailable. The migration must be verified in the disposable CI service.
+Local R2 regression: 12 focused crawler unit tests passed; Ruff passed; mypy passed for changed backend modules; frontend build passed; `git diff --check` passed. The full 216-test unit suite reached `tests/test_health.py::test_liveness_returns_ok` (91%) and timed out after 120 seconds in the local Python 3.14 environment. Actions [run 44754873469](https://github.com/Arthur-Levi/Levi-Intelligence/actions/runs/44754873469) passed backend Ruff and 216 unit tests on Python 3.12, disposable PostgreSQL 16 identity preflight, Alembic 0007 schema verification, all 16 PostgreSQL integration tests (13 preserved plus 3 new), and frontend build. Local Docker daemon access remains denied. The manual benchmark workflow has not been dispatched; capacity data are **NOT MEASURED**.
 
 ## Residual risks and decision
 
