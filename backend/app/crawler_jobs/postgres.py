@@ -84,7 +84,12 @@ class PostgresCrawlerJobRepository:
                     row.finished_at = now
                     if attempt is not None:
                         attempt.outcome = "cancelled"
-                    emit("recovery", tenant_id=row.tenant_id, job_id=row.id, outcome="cancelled")
+                    emit(
+                        "recovery", tenant_id=row.tenant_id, job_id=row.id,
+                        attempt_id=attempt.id if attempt else None,
+                        worker_id=attempt.worker_id if attempt else None,
+                        outcome="cancelled",
+                    )
                 elif row.attempts >= MAX_ATTEMPTS:
                     row.status = CrawlerJobStatus.FAILED
                     row.failure_code = "retry_exhausted"
@@ -96,13 +101,24 @@ class PostgresCrawlerJobRepository:
                         "recovery",
                         tenant_id=row.tenant_id,
                         job_id=row.id,
+                        attempt_id=attempt.id if attempt else None,
+                        worker_id=attempt.worker_id if attempt else None,
                         outcome="retry_exhausted",
                     )
                 else:
                     row.status = CrawlerJobStatus.QUEUED
                     row.next_attempt_at = now + timedelta(seconds=min(60, 2**row.attempts))
                     emit(
-                        "retry_scheduled", tenant_id=row.tenant_id, job_id=row.id, outcome="queued"
+                        "recovery", tenant_id=row.tenant_id, job_id=row.id,
+                        attempt_id=attempt.id if attempt else None,
+                        worker_id=attempt.worker_id if attempt else None,
+                        outcome="queued",
+                    )
+                    emit(
+                        "retry_scheduled", tenant_id=row.tenant_id, job_id=row.id,
+                        attempt_id=attempt.id if attempt else None,
+                        worker_id=attempt.worker_id if attempt else None,
+                        outcome="queued",
                     )
 
             global_running = await session.scalar(
