@@ -413,9 +413,7 @@ async def test_redirect_to_another_hostname_re_resolves_dns(
             FakeResponse(chunks=[b"ok"]),
         ]
     )
-    sessions, guards = install_http_mocks(
-        monkeypatch, response_factory=lambda: next(responses)
-    )
+    sessions, guards = install_http_mocks(monkeypatch, response_factory=lambda: next(responses))
     allow_test_urls(monkeypatch)
     result = await SecureHTTPTransport().fetch("http://example.com/first")
     assert result.body == b"ok"
@@ -482,9 +480,7 @@ async def test_dns_failure_on_redirect_stops_before_following_target(
     allow_test_urls(monkeypatch)
 
     with pytest.raises(DNSResolutionError):
-        await SecureHTTPTransport(dns_guard=DNSGuard(resolver)).fetch(
-            "http://example.com/"
-        )
+        await SecureHTTPTransport(dns_guard=DNSGuard(resolver)).fetch("http://example.com/")
 
     assert resolver.hosts == ["example.com", "other.example"]
     assert not resolver.closed
@@ -507,9 +503,7 @@ async def test_non_public_dns_answer_on_redirect_is_rejected(
     allow_test_urls(monkeypatch)
 
     with pytest.raises(UnsafeTargetError):
-        await SecureHTTPTransport(dns_guard=DNSGuard(resolver)).fetch(
-            "http://example.com/"
-        )
+        await SecureHTTPTransport(dns_guard=DNSGuard(resolver)).fetch("http://example.com/")
 
     assert resolver.hosts == ["example.com", "other.example"]
     assert not resolver.closed
@@ -620,9 +614,7 @@ async def test_session_construction_failure_closes_connector_and_owned_guard(
 async def test_same_host_redirect_rejects_dns_rebinding_before_second_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    resolver = ControlledResolver(
-        [[dns_record("8.8.8.8")], [dns_record("10.0.0.8")]]
-    )
+    resolver = ControlledResolver([[dns_record("8.8.8.8")], [dns_record("10.0.0.8")]])
     responses = iter(
         [
             FakeResponse(status=302, headers={"location": "/next"}),

@@ -55,11 +55,25 @@ def test_accepts_public_ipv4_and_ipv6(address: str) -> None:
 @pytest.mark.parametrize(
     "address",
     [
-        "127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1",
-        "169.254.1.1", "0.0.0.0", "100.64.0.1", "192.0.2.1",
-        "198.18.0.1", "224.0.0.1", "255.255.255.255",
-        "::", "::1", "fc00::1", "fd00::1", "fe80::1", "ff02::1",
-        "::ffff:127.0.0.1", "::ffff:10.0.0.1",
+        "127.0.0.1",
+        "10.0.0.1",
+        "172.16.0.1",
+        "192.168.1.1",
+        "169.254.1.1",
+        "0.0.0.0",
+        "100.64.0.1",
+        "192.0.2.1",
+        "198.18.0.1",
+        "224.0.0.1",
+        "255.255.255.255",
+        "::",
+        "::1",
+        "fc00::1",
+        "fd00::1",
+        "fe80::1",
+        "ff02::1",
+        "::ffff:127.0.0.1",
+        "::ffff:10.0.0.1",
     ],
 )
 def test_rejects_private_and_link_local_addresses(address: str) -> None:
@@ -119,9 +133,7 @@ async def test_rejects_dns_rebinding_answer_on_each_resolution() -> None:
 
 @pytest.mark.asyncio
 async def test_connector_connects_to_validated_ip_with_original_tls_hostname() -> None:
-    guard = DNSGuard(
-        FakeResolver([[record("8.8.8.8"), record("2606:4700:4700::1111")]])
-    )
+    guard = DNSGuard(FakeResolver([[record("8.8.8.8"), record("2606:4700:4700::1111")]]))
     connector = aiohttp.TCPConnector(
         resolver=PinnedResolver(guard), use_dns_cache=False, force_close=True, ssl=True
     )
@@ -135,9 +147,7 @@ async def test_connector_connects_to_validated_ip_with_original_tls_hostname() -
     loop = asyncio.get_running_loop()
     request = aiohttp.ClientRequest("GET", URL("https://example.com/"), loop=loop, ssl=True)
     try:
-        await connector._create_direct_connection(
-            request, [], aiohttp.ClientTimeout(total=1.0)
-        )
+        await connector._create_direct_connection(request, [], aiohttp.ClientTimeout(total=1.0))
     finally:
         await connector.close()
 

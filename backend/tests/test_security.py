@@ -1,7 +1,12 @@
 from uuid import uuid4
 
 from app.core.permissions import role_allows
-from app.core.security import create_access_token, decode_access_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    decode_access_token,
+    hash_password,
+    verify_password,
+)
 from app.models.identity import MembershipRole
 
 

@@ -11,15 +11,15 @@ router = APIRouter(prefix="/organizations", tags=["organizations"])
 
 @router.get("/current", response_model=OrganizationResponse)
 async def current_organization(
-    context: TenantContext = Depends(get_tenant_context),
+    context: TenantContext = Depends(get_tenant_context),  # noqa: B008
 ) -> OrganizationResponse:
     return OrganizationResponse.model_validate(context.tenant)
 
 
 @router.get("/audit-events")
 async def list_audit_events(
-    context: TenantContext = Depends(get_tenant_context),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(get_tenant_context),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ):
     from app.models.identity import AuditEvent
 
@@ -40,4 +40,3 @@ async def list_audit_events(
         }
         for event in result.all()
     ]
-

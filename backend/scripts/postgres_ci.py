@@ -115,16 +115,16 @@ async def verify_schema(url: URL, config: Config) -> None:
     print("Alembic head and crawler lease columns verified")
 
 
-async def main(action: str) -> None:
+def main(action: str) -> None:
     url = test_database_url()
-    await verify_identity(url)
+    asyncio.run(verify_identity(url))
     if action == "preflight":
         return
 
     config = alembic_config(url)
     command.upgrade(config, "head")
-    await verify_identity(url)
-    await verify_schema(url, config)
+    asyncio.run(verify_identity(url))
+    asyncio.run(verify_schema(url, config))
     print("Migrations applied and crawler schema verified")
 
 
@@ -133,7 +133,7 @@ if __name__ == "__main__":
     if selected_action not in {"preflight", "migrate-and-verify"}:
         raise SystemExit("usage: python scripts/postgres_ci.py {preflight|migrate-and-verify}")
     try:
-        asyncio.run(main(selected_action))
+        main(selected_action)
     except Exception as exc:
         print(f"PostgreSQL CI check failed: {type(exc).__name__}", file=sys.stderr)
         raise SystemExit(1) from None

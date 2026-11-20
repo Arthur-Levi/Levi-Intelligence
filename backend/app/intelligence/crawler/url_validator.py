@@ -1,4 +1,3 @@
-
 """Strict URL validation for the secure crawler.
 
 This module performs syntactic validation only.
@@ -165,9 +164,7 @@ def validate_url(url: str) -> ValidatedURL:
     except ValueError as exc:
         raise UnsafeTargetError("URL contains an invalid port") from exc
 
-    port = raw_port if raw_port is not None else (
-        443 if scheme == "https" else 80
-    )
+    port = raw_port if raw_port is not None else (443 if scheme == "https" else 80)
 
     if port not in ALLOWED_PORTS[scheme]:
         _reject(f"Port {port} is not allowed for {scheme}")
@@ -180,9 +177,7 @@ def validate_url(url: str) -> ValidatedURL:
         _reject("URL path must be absolute")
 
     netloc = hostname
-    normalized_url = urlunsplit(
-        (scheme, netloc, path, parsed.query, "")
-    )
+    normalized_url = urlunsplit((scheme, netloc, path, parsed.query, ""))
 
     if len(normalized_url) > MAX_URL_LENGTH:
         _reject("Normalized URL exceeds the maximum length")

@@ -1,4 +1,3 @@
-
 """Tests for secure crawler URL validation."""
 
 import pytest
@@ -13,8 +12,7 @@ from app.intelligence.crawler.url_validator import validate_url
         ("https://example.com", "https", "example.com", 443),
         ("http://example.com/path", "http", "example.com", 80),
         ("https://EXAMPLE.COM/about", "https", "example.com", 443),
-        ("https://example.com:443/search?q=dental",
-         "https", "example.com", 443),
+        ("https://example.com:443/search?q=dental", "https", "example.com", 443),
     ],
 )
 def test_accepts_valid_public_url(

@@ -13,11 +13,11 @@ from app.models.identity import Membership, MembershipRole, Tenant, User
 from app.schemas.identity import (
     CurrentIdentityResponse,
     LoginRequest,
+    MembershipRoleUpdateRequest,
     OrganizationResponse,
     RegisterRequest,
     TokenResponse,
     UserResponse,
-    MembershipRoleUpdateRequest,
 )
 from app.services.audit import record_audit_event
 
@@ -28,14 +28,18 @@ router = APIRouter(prefix="/identity", tags=["identity"])
 async def register(
     payload: RegisterRequest,
     request: Request,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> TokenResponse:
     email = str(payload.email).lower()
     existing = await session.scalar(select(User.id).where(User.email == email))
     if existing:
         raise HTTPException(status_code=409, detail="An account with this email already exists")
     tenant = Tenant(name=payload.organization_name.strip(), slug=payload.organization_slug)
-    user = User(email=email, full_name=payload.full_name.strip(), password_hash=hash_password(payload.password))
+    user = User(
+        email=email,
+        full_name=payload.full_name.strip(),
+        password_hash=hash_password(payload.password),
+    )
     try:
         session.add_all([tenant, user])
         await session.flush()
@@ -54,7 +58,9 @@ async def register(
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="Email or organization slug already in use") from None
+        raise HTTPException(
+            status_code=409, detail="Email or organization slug already in use"
+        ) from None
     return TokenResponse(
         access_token=create_access_token(user_id=user.id, tenant_id=tenant.id),
         expires_in=get_settings().access_token_expire_minutes * 60,
@@ -65,7 +71,7 @@ async def register(
 async def login(
     payload: LoginRequest,
     request: Request,
-    session: AsyncSession = Depends(get_db_session),
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> TokenResponse:
     result = await session.execute(
         select(User, Tenant, Membership)
@@ -77,7 +83,11 @@ async def login(
     if row is None:
         raise HTTPException(status_code=401, detail="Invalid email, password or organization")
     user, tenant, membership = row
-    if not user.is_active or not tenant.is_active or not verify_password(payload.password, user.password_hash):
+    if (
+        not user.is_active
+        or not tenant.is_active
+        or not verify_password(payload.password, user.password_hash)
+    ):
         raise HTTPException(status_code=401, detail="Invalid email, password or organization")
     await record_audit_event(
         session,
@@ -97,7 +107,7 @@ async def login(
 
 
 @router.get("/me", response_model=CurrentIdentityResponse)
-async def me(context: TenantContext = Depends(get_tenant_context)) -> CurrentIdentityResponse:
+async def me(context: TenantContext = Depends(get_tenant_context)) -> CurrentIdentityResponse:  # noqa: B008
     return CurrentIdentityResponse(
         user=UserResponse.model_validate(context.user),
         organization=OrganizationResponse.model_validate(context.tenant),
@@ -107,8 +117,8 @@ async def me(context: TenantContext = Depends(get_tenant_context)) -> CurrentIde
 
 @router.get("/members", response_model=list[UserResponse])
 async def list_members(
-    context: TenantContext = Depends(require_permission("members:read")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("members:read")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[UserResponse]:
     result = await session.scalars(
         select(User)
@@ -123,8 +133,8 @@ async def list_members(
 async def update_member_role(
     member_user_id: str,
     payload: MembershipRoleUpdateRequest,
-    context: TenantContext = Depends(require_permission("members:roles:manage")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("members:roles:manage")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> None:
     try:
         target_user_id = UUID(member_user_id)
@@ -146,9 +156,11 @@ async def update_member_role(
             )
         )
         if len(owners.all()) <= 1:
-            raise HTTPException(status_code=409, detail="The organization must retain at least one owner")
+            raise HTTPException(
+                status_code=409, detail="The organization must retain at least one owner"
+            )
     previous_role = membership.role
-    membership.role = payload.role
+    membership.role = payload.parsed_role
     await record_audit_event(
         session,
         tenant_id=context.tenant.id,
@@ -156,6 +168,10 @@ async def update_member_role(
         action="membership.role_updated",
         resource_type="membership",
         resource_id=str(membership.id),
-        details={"user_id": str(target_user_id), "from": previous_role.value, "to": payload.role.value},
+        details={
+            "user_id": str(target_user_id),
+            "from": previous_role.value,
+            "to": payload.parsed_role.value,
+        },
     )
     await session.commit()

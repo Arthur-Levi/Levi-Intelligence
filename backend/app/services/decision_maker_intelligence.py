@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Iterable
+from typing import TypedDict
 from urllib.parse import urlsplit
 
-from app.models.prospecting import DecisionMakerEvidence
+from app.models.prospecting import DecisionMakerEvidence, DecisionMakerStatus
+
+
+class DecisionMakerConfidence(TypedDict):
+    score: int
+    level: str
+    status: DecisionMakerStatus
+    claim_types: list[str]
+    source_count: int
+    explanation: list[str]
+
 
 # Source classes are deliberately allow-listed. LinkedIn scraping and access-control
 # circumvention are not supported; use only approved APIs or licensed providers.
@@ -59,13 +70,13 @@ def freshness_factor(observed_at: datetime | None, now: datetime | None = None) 
 
 def calculate_decision_maker_confidence(
     evidence: Iterable[DecisionMakerEvidence], now: datetime | None = None
-) -> dict[str, object]:
+) -> DecisionMakerConfidence:
     current = [item for item in evidence if item.is_current]
     if not current:
         return {
             "score": 0,
             "level": "insufficient",
-            "status": "unconfirmed",
+            "status": DecisionMakerStatus.UNCONFIRMED,
             "claim_types": [],
             "source_count": 0,
             "explanation": ["Nenhuma evidência profissional atual foi registrada."],
@@ -85,15 +96,23 @@ def calculate_decision_maker_confidence(
     corroboration = min(10, max(0, (len(sources) - 1) * 5))
     score = min(98, round(base_score + corroboration))
     enough_claims = "role" in claim_types and "company_affiliation" in claim_types
-    status = "current" if score >= 70 and enough_claims else "unconfirmed"
+    status = (
+        DecisionMakerStatus.CURRENT
+        if score >= 70 and enough_claims
+        else DecisionMakerStatus.UNCONFIRMED
+    )
     if score >= 85 and enough_claims:
         level = "high"
     elif score >= 65:
         level = "medium"
     else:
         level = "low"
-    explanation = [f"Autoridade média das fontes ajustada pela atualidade: {round(base_score)} pontos."]
-    explanation.append(f"Corroboração por {len(sources)} fonte(s) distinta(s): +{corroboration} pontos.")
+    explanation = [
+        f"Autoridade média das fontes ajustada pela atualidade: {round(base_score)} pontos."
+    ]
+    explanation.append(
+        f"Corroboração por {len(sources)} fonte(s) distinta(s): +{corroboration} pontos."
+    )
     if not enough_claims:
         explanation.append("Falta comprovar cargo e vínculo com a empresa.")
     return {
@@ -119,11 +138,17 @@ def classify_job_title(job_title: str | None) -> str:
     title = normalize_person_name(job_title)
     if any(token in title for token in ("socio administrador", "partner", "socio", "socia")):
         return "partner"
-    if any(token in title for token in ("proprietario", "proprietaria", "fundador", "fundadora", "owner")):
+    if any(
+        token in title
+        for token in ("proprietario", "proprietaria", "fundador", "fundadora", "owner")
+    ):
         return "owner"
     if any(token in title for token in ("diretor", "diretora", "director", "ceo", "presidente")):
         return "director"
-    if any(token in title for token in ("gerente", "gestor", "gestora", "manager", "coordenador", "coordenadora")):
+    if any(
+        token in title
+        for token in ("gerente", "gestor", "gestora", "manager", "coordenador", "coordenadora")
+    ):
         return "manager"
     if any(token in title for token in ("compras", "procurement", "suprimentos")):
         return "procurement"

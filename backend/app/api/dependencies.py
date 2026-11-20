@@ -7,11 +7,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import get_db_session
 from app.core.permissions import role_allows
 from app.core.security import decode_access_token
-from app.models.identity import Membership, MembershipRole, Tenant, User
-from app.core.permissions import role_allows
+from app.db import get_db_session
+from app.models.identity import Membership, Tenant, User
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -24,10 +23,12 @@ class TenantContext:
 
 
 async def get_tenant_context(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
-    session: AsyncSession = Depends(get_db_session),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> TenantContext:
-    unauthorized = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication")
+    unauthorized = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication"
+    )
     if credentials is None:
         raise unauthorized
     try:
@@ -57,9 +58,11 @@ async def get_tenant_context(
 
 
 def require_permission(permission: str):
-    async def dependency(context: TenantContext = Depends(get_tenant_context)) -> TenantContext:
+    async def dependency(context: TenantContext = Depends(get_tenant_context)) -> TenantContext:  # noqa: B008
         if not role_allows(context.membership.role, permission):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions"
+            )
         return context
 
     return dependency

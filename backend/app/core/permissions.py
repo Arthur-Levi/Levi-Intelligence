@@ -7,7 +7,9 @@ PERMISSIONS: dict[str, frozenset[MembershipRole]] = {
     "members:roles:manage": frozenset({MembershipRole.OWNER}),
     "billing:manage": frozenset({MembershipRole.OWNER}),
     "diagnostics:read": frozenset(MembershipRole),
-    "diagnostics:write": frozenset({MembershipRole.OWNER, MembershipRole.ADMIN, MembershipRole.MEMBER}),
+    "diagnostics:write": frozenset(
+        {MembershipRole.OWNER, MembershipRole.ADMIN, MembershipRole.MEMBER}
+    ),
     "settings:manage": frozenset({MembershipRole.OWNER, MembershipRole.ADMIN}),
 }
 
@@ -15,14 +17,19 @@ PERMISSIONS: dict[str, frozenset[MembershipRole]] = {
 def role_allows(role: MembershipRole, permission: str) -> bool:
     return role in PERMISSIONS.get(permission, frozenset())
 
+
 # Prospecting resources are tenant-owned; viewer can inspect, members can create/update.
 PERMISSIONS.update(
     {
         "icp:read": frozenset(MembershipRole),
         "icp:write": frozenset({MembershipRole.OWNER, MembershipRole.ADMIN, MembershipRole.MEMBER}),
         "prospecting:read": frozenset(MembershipRole),
-        "prospecting:write": frozenset({MembershipRole.OWNER, MembershipRole.ADMIN, MembershipRole.MEMBER}),
+        "prospecting:write": frozenset(
+            {MembershipRole.OWNER, MembershipRole.ADMIN, MembershipRole.MEMBER}
+        ),
         "companies:read": frozenset(MembershipRole),
-        "companies:write": frozenset({MembershipRole.OWNER, MembershipRole.ADMIN, MembershipRole.MEMBER}),
+        "companies:write": frozenset(
+            {MembershipRole.OWNER, MembershipRole.ADMIN, MembershipRole.MEMBER}
+        ),
     }
 )

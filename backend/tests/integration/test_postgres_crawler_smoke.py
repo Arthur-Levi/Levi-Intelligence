@@ -22,9 +22,7 @@ async def test_postgres_crawler_claim_and_transaction_rollback() -> None:
     tenant_id, user_id, company_id, job_id, rollback_tenant_id = (uuid4() for _ in range(5))
     try:
         async with factory.begin() as session:
-            session.add(
-                Tenant(id=tenant_id, name="CI crawler tenant", slug=f"ci-{tenant_id.hex}")
-            )
+            session.add(Tenant(id=tenant_id, name="CI crawler tenant", slug=f"ci-{tenant_id.hex}"))
             session.add(
                 User(
                     id=user_id,

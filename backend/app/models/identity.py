@@ -3,13 +3,13 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, JSON, String, Text, Uuid, func
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKey
 
 
-class MembershipRole(str, enum.Enum):
+class MembershipRole(enum.StrEnum):
     OWNER = "owner"
     ADMIN = "admin"
     MEMBER = "member"
@@ -38,12 +38,14 @@ class User(UUIDPrimaryKey, TimestampMixin, Base):
 
 class Membership(UUIDPrimaryKey, TimestampMixin, Base):
     __tablename__ = "memberships"
-    __table_args__ = (
-        Index("ix_memberships_user_tenant", "user_id", "tenant_id", unique=True),
-    )
+    __table_args__ = (Index("ix_memberships_user_tenant", "user_id", "tenant_id", unique=True),)
 
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
     role: Mapped[MembershipRole] = mapped_column(
         Enum(MembershipRole, name="membership_role"), default=MembershipRole.MEMBER, nullable=False
     )
@@ -55,7 +57,9 @@ class AuditEvent(UUIDPrimaryKey, Base):
     __tablename__ = "audit_events"
     __table_args__ = (Index("ix_audit_tenant_created", "tenant_id", "created_at"),)
 
-    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

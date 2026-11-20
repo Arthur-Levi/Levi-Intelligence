@@ -4,6 +4,7 @@ Providers must use documented APIs, licensed datasets, official public registrie
 or public company pages where automated access is permitted. This module intentionally
 contains no LinkedIn crawler, credentialed-profile scraper, or access-control bypass.
 """
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -42,7 +43,10 @@ SUPPORTED_PROVIDER_CLASSES = frozenset(
 
 
 def validate_provider_candidate(candidate: DecisionMakerCandidate) -> DecisionMakerCandidate:
-    from app.services.decision_maker_intelligence import authority_for_source, validate_public_source_url
+    from app.services.decision_maker_intelligence import (
+        authority_for_source,
+        validate_public_source_url,
+    )
 
     if candidate.source_type not in SUPPORTED_PROVIDER_CLASSES:
         raise ValueError("Provider class is not supported")

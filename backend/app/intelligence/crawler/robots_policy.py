@@ -50,9 +50,7 @@ class RobotsFormatError(ValueError):
 
 
 _PERCENT_ESCAPE = re.compile(r"%([0-9a-fA-F]{2})")
-_UNRESERVED = frozenset(
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
-)
+_UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
 
 def _normalize_percent_encoding(value: str) -> str:
@@ -364,8 +362,10 @@ class RobotsPolicy:
                 await _await_cleanup(self._finish_flight(origin, flight, None))
                 raise
             except Exception as exc:
-                error = exc if isinstance(exc, RobotsPolicyError) else RobotsPolicyError(
-                    "robots.txt could not be retrieved safely"
+                error = (
+                    exc
+                    if isinstance(exc, RobotsPolicyError)
+                    else RobotsPolicyError("robots.txt could not be retrieved safely")
                 )
                 if error is not exc:
                     error.__cause__ = exc

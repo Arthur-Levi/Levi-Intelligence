@@ -54,13 +54,19 @@ def validate_job_input(payload: CrawlerJobInput) -> CrawlerJobInput:
 
 
 def build_crawler_job(
-    *, tenant_id: UUID, company_id: UUID, actor_user_id: UUID,
-    website_url: str, idempotency_key: str,
+    *,
+    tenant_id: UUID,
+    company_id: UUID,
+    actor_user_id: UUID,
+    website_url: str,
+    idempotency_key: str,
 ) -> CrawlerJob:
     """Build a minimal durable job and a stable fingerprint for idempotent submission."""
-    fingerprint = sha256(json.dumps(
-        {"company_id": str(company_id), "website_url": website_url}, sort_keys=True
-    ).encode()).hexdigest()
+    fingerprint = sha256(
+        json.dumps(
+            {"company_id": str(company_id), "website_url": website_url}, sort_keys=True
+        ).encode()
+    ).hexdigest()
     return CrawlerJob(
         tenant_id=tenant_id,
         company_id=company_id,

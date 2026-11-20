@@ -1,5 +1,3 @@
-from typing import Any
-
 import httpx
 
 from app.integrations.prospecting import DiscoveredCompany, DiscoveryRequest
@@ -12,7 +10,9 @@ class ApifyClient:
 
     async def discover(self, request: DiscoveryRequest) -> list[DiscoveredCompany]:
         timeout = httpx.Timeout(180.0, connect=10.0)
-        async with httpx.AsyncClient(timeout=timeout, headers={"Authorization": f"Bearer {self.token}"}) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout, headers={"Authorization": f"Bearer {self.token}"}
+        ) as client:
             start = await client.post(
                 f"https://api.apify.com/v2/acts/{self.actor_id}/runs",
                 json={"searchStringsArray": [request.query], **request.filters},
@@ -33,6 +33,7 @@ class ApifyClient:
                 if actor_status in {"SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"}:
                     break
                 import asyncio
+
                 await asyncio.sleep(2)
             else:
                 raise TimeoutError("Apify actor did not finish within the configured wait window")
@@ -54,15 +55,21 @@ class ApifyClient:
             if not name:
                 continue
             website = item.get("website") or item.get("websiteUrl") or item.get("url")
-            results.append(DiscoveredCompany(
-                name=str(name)[:200],
-                website_url=str(website)[:500] if website else None,
-                phone=item.get("phone") or item.get("phoneNumber"),
-                email=item.get("email"),
-                address=item.get("address") if isinstance(item.get("address"), dict) else {"formatted": item.get("address")} if item.get("address") else {},
-                industry=item.get("category") or item.get("industry"),
-                source_url=item.get("url") or item.get("placeUrl") or website,
-                external_id=str(item.get("placeId") or item.get("id") or "") or None,
-                raw=item,
-            ))
+            results.append(
+                DiscoveredCompany(
+                    name=str(name)[:200],
+                    website_url=str(website)[:500] if website else None,
+                    phone=item.get("phone") or item.get("phoneNumber"),
+                    email=item.get("email"),
+                    address=item.get("address")
+                    if isinstance(item.get("address"), dict)
+                    else {"formatted": item.get("address")}
+                    if item.get("address")
+                    else {},
+                    industry=item.get("category") or item.get("industry"),
+                    source_url=item.get("url") or item.get("placeUrl") or website,
+                    external_id=str(item.get("placeId") or item.get("id") or "") or None,
+                    raw=item,
+                )
+            )
         return results

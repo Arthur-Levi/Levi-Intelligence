@@ -80,9 +80,7 @@ async def test_concurrent_cache_fills_evict_without_exceeding_capacity() -> None
 
     await policy.check("https://old.synthetic.com/", missing)
     tasks = [
-        asyncio.create_task(
-            policy.check(f"https://fill-{index}.synthetic.com/", fetcher)
-        )
+        asyncio.create_task(policy.check(f"https://fill-{index}.synthetic.com/", fetcher))
         for index in range(3)
     ]
     await asyncio.wait_for(all_entered.wait(), timeout=2)
@@ -233,8 +231,7 @@ async def test_policy_lock_contention_has_a_finite_pending_check_limit() -> None
         return _response()
 
     tasks = [
-        asyncio.create_task(policy.check("https://lock.synthetic.com/", fetcher))
-        for _ in range(4)
+        asyncio.create_task(policy.check("https://lock.synthetic.com/", fetcher)) for _ in range(4)
     ]
     await _wait_for(lambda: policy.pending_checks == policy.max_pending_checks)
     with pytest.raises(RobotsPolicyError, match="check capacity is full"):
@@ -349,9 +346,7 @@ async def test_integrated_saturation_timeout_eviction_and_recovery() -> None:
     assert admission.queued_requests <= 1
     assert policy.inflight_origins <= 2
     release.set()
-    outcomes = await asyncio.wait_for(
-        asyncio.gather(*tasks, return_exceptions=True), timeout=3
-    )
+    outcomes = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=3)
     assert sum(isinstance(value, RobotsPolicyError) for value in outcomes) >= 10
     assert admission.active_requests == 0
     assert admission.queued_requests == 0

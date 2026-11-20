@@ -137,6 +137,7 @@ async def test_5xx_and_malformed_or_oversized_content_fail_closed() -> None:
         await policy.check("https://malformed.example.com/blocked", malformed)
 
     small_policy = RobotsPolicy(max_bytes=8)
+
     async def oversized(url: str) -> FetchResponse:
         return response(200, b"User-agent: *\n")
 

@@ -1,10 +1,13 @@
+from typing import Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints
-from app.models.identity import MembershipRole
-from typing import Annotated
 
-Slug = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", min_length=3, max_length=80)]
+from app.models.identity import MembershipRole
+
+Slug = Annotated[
+    str, StringConstraints(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", min_length=3, max_length=80)
+]
 
 
 class RegisterRequest(BaseModel):
@@ -51,9 +54,7 @@ class MembershipRoleUpdateRequest(BaseModel):
     role: str
 
     @property
-    def parsed_role(self):
-        from app.models.identity import MembershipRole
-
+    def parsed_role(self) -> MembershipRole:
         try:
             return MembershipRole(self.role)
         except ValueError:

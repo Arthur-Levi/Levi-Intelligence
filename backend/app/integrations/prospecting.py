@@ -34,7 +34,7 @@ class ManualDiscoveryProvider:
 
 
 class ApifyDiscoveryProvider:
-    """Adapter contract. Actor execution is enabled only after credentials and actor mapping are configured."""
+    """Adapter contract. Actor execution needs configured credentials and actor mapping."""
 
     def __init__(self, token: str | None, actor_id: str | None) -> None:
         self.token = token
@@ -43,4 +43,6 @@ class ApifyDiscoveryProvider:
     async def discover(self, request: DiscoveryRequest) -> list[DiscoveredCompany]:
         if not self.token or not self.actor_id:
             raise RuntimeError("Apify integration is not configured for this environment")
-        raise NotImplementedError("Apify actor execution is scheduled for the next integration milestone")
+        raise NotImplementedError(
+            "Apify actor execution is scheduled for the next integration milestone"
+        )

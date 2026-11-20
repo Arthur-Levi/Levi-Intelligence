@@ -45,12 +45,14 @@ from app.services.qualification import qualify_against_icp, qualify_company
 router = APIRouter(tags=["prospecting"])
 
 
-@router.post("/icp-profiles", response_model=ICPProfileResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/icp-profiles", response_model=ICPProfileResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_icp_profile(
     payload: ICPProfileCreate,
     request: Request,
-    context: TenantContext = Depends(require_permission("icp:write")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("icp:write")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> ICPProfileResponse:
     profile = ICPProfile(tenant_id=context.tenant.id, **payload.model_dump())
     session.add(profile)
@@ -68,15 +70,17 @@ async def create_icp_profile(
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="An ICP with this name already exists") from None
+        raise HTTPException(
+            status_code=409, detail="An ICP with this name already exists"
+        ) from None
     await session.refresh(profile)
     return ICPProfileResponse.model_validate(profile)
 
 
 @router.get("/icp-profiles", response_model=list[ICPProfileResponse])
 async def list_icp_profiles(
-    context: TenantContext = Depends(require_permission("icp:read")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("icp:read")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[ICPProfileResponse]:
     rows = await session.scalars(
         select(ICPProfile)
@@ -86,13 +90,15 @@ async def list_icp_profiles(
     return [ICPProfileResponse.model_validate(row) for row in rows.all()]
 
 
-@router.post("/prospecting-runs", response_model=ProspectingRunResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/prospecting-runs", response_model=ProspectingRunResponse, status_code=status.HTTP_202_ACCEPTED
+)
 async def create_prospecting_run(
     payload: ProspectingRunCreate,
     request: Request,
     idempotency_key: str = Header(min_length=8, max_length=128, alias="Idempotency-Key"),
-    context: TenantContext = Depends(require_permission("prospecting:write")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("prospecting:write")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> ProspectingRunResponse:
     profile = await session.scalar(
         select(ICPProfile).where(
@@ -103,14 +109,20 @@ async def create_prospecting_run(
     )
     if profile is None:
         raise HTTPException(status_code=404, detail="ICP profile not found")
-    existing = await session.scalar(select(ProspectingRun).where(
-        ProspectingRun.tenant_id == context.tenant.id,
-        ProspectingRun.idempotency_key == idempotency_key,
-    ))
-    fingerprint = sha256(json.dumps(payload.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
+    existing = await session.scalar(
+        select(ProspectingRun).where(
+            ProspectingRun.tenant_id == context.tenant.id,
+            ProspectingRun.idempotency_key == idempotency_key,
+        )
+    )
+    fingerprint = sha256(
+        json.dumps(payload.model_dump(mode="json"), sort_keys=True).encode()
+    ).hexdigest()
     if existing is not None:
         if existing.request_fingerprint != fingerprint:
-            raise HTTPException(status_code=409, detail="Idempotency-Key was already used with a different request")
+            raise HTTPException(
+                status_code=409, detail="Idempotency-Key was already used with a different request"
+            )
         return ProspectingRunResponse.model_validate(existing)
     run = ProspectingRun(
         tenant_id=context.tenant.id,
@@ -139,7 +151,12 @@ async def create_prospecting_run(
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        existing = await session.scalar(select(ProspectingRun).where(ProspectingRun.tenant_id == context.tenant.id, ProspectingRun.idempotency_key == idempotency_key))
+        existing = await session.scalar(
+            select(ProspectingRun).where(
+                ProspectingRun.tenant_id == context.tenant.id,
+                ProspectingRun.idempotency_key == idempotency_key,
+            )
+        )
         if existing is None or existing.request_fingerprint != fingerprint:
             raise HTTPException(status_code=409, detail="Idempotency-Key conflict") from None
         return ProspectingRunResponse.model_validate(existing)
@@ -150,8 +167,8 @@ async def create_prospecting_run(
 @router.get("/prospecting-runs", response_model=list[ProspectingRunResponse])
 async def list_prospecting_runs(
     limit: int = Query(default=50, ge=1, le=100),
-    context: TenantContext = Depends(require_permission("prospecting:read")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("prospecting:read")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[ProspectingRunResponse]:
     rows = await session.scalars(
         select(ProspectingRun)
@@ -165,12 +182,14 @@ async def list_prospecting_runs(
 @router.get("/prospecting-runs/{run_id}", response_model=ProspectingRunResponse)
 async def get_prospecting_run(
     run_id: UUID,
-    context: TenantContext = Depends(require_permission("prospecting:read")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("prospecting:read")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> ProspectingRunResponse:
-    run = await session.scalar(select(ProspectingRun).where(
-        ProspectingRun.id == run_id, ProspectingRun.tenant_id == context.tenant.id
-    ))
+    run = await session.scalar(
+        select(ProspectingRun).where(
+            ProspectingRun.id == run_id, ProspectingRun.tenant_id == context.tenant.id
+        )
+    )
     if run is None:
         raise HTTPException(status_code=404, detail="Prospecting run not found")
     return ProspectingRunResponse.model_validate(run)
@@ -180,23 +199,35 @@ async def get_prospecting_run(
 async def cancel_prospecting_run(
     run_id: UUID,
     request: Request,
-    context: TenantContext = Depends(require_permission("prospecting:write")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("prospecting:write")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> ProspectingRunResponse:
-    run = await session.scalar(select(ProspectingRun).where(
-        ProspectingRun.id == run_id, ProspectingRun.tenant_id == context.tenant.id
-    ).with_for_update())
+    run = await session.scalar(
+        select(ProspectingRun)
+        .where(ProspectingRun.id == run_id, ProspectingRun.tenant_id == context.tenant.id)
+        .with_for_update()
+    )
     if run is None:
         raise HTTPException(status_code=404, detail="Prospecting run not found")
-    if run.status in {ProspectingRunStatus.COMPLETED, ProspectingRunStatus.FAILED, ProspectingRunStatus.CANCELLED}:
+    if run.status in {
+        ProspectingRunStatus.COMPLETED,
+        ProspectingRunStatus.FAILED,
+        ProspectingRunStatus.CANCELLED,
+    }:
         raise HTTPException(status_code=409, detail="A terminal run cannot be cancelled")
     run.cancel_requested_at = datetime.now(UTC)
     if run.status == ProspectingRunStatus.QUEUED:
         run.status = ProspectingRunStatus.CANCELLED
         run.finished_at = datetime.now(UTC)
-    await record_audit_event(session, tenant_id=context.tenant.id, actor_user_id=context.user.id,
-        action="prospecting.run_cancel_requested", resource_type="prospecting_run", resource_id=str(run.id),
-        ip_address=request.client.host if request.client else None)
+    await record_audit_event(
+        session,
+        tenant_id=context.tenant.id,
+        actor_user_id=context.user.id,
+        action="prospecting.run_cancel_requested",
+        resource_type="prospecting_run",
+        resource_id=str(run.id),
+        ip_address=request.client.host if request.client else None,
+    )
     await session.commit()
     await session.refresh(run)
     return ProspectingRunResponse.model_validate(run)
@@ -206,8 +237,8 @@ async def cancel_prospecting_run(
 async def create_company(
     payload: CompanyCreate,
     request: Request,
-    context: TenantContext = Depends(require_permission("companies:write")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("companies:write")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> CompanyResponse:
     normalized_url, domain = normalize_website(payload.website_url)
     company = Company(
@@ -251,7 +282,10 @@ async def create_company(
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        raise HTTPException(status_code=409, detail="A company with this website already exists in this organization") from None
+        raise HTTPException(
+            status_code=409,
+            detail="A company with this website already exists in this organization",
+        ) from None
     await session.refresh(company)
     return CompanyResponse.model_validate(company)
 
@@ -259,18 +293,20 @@ async def create_company(
 @router.get("/companies", response_model=list[CompanyResponse])
 async def list_companies(
     search: str | None = Query(default=None, min_length=2, max_length=120),
-    company_status: CompanyStatus | None = Query(default=None, alias="status"),
+    company_status: CompanyStatus | None = Query(default=None, alias="status"),  # noqa: B008
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    context: TenantContext = Depends(require_permission("companies:read")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("companies:read")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[CompanyResponse]:
     statement = select(Company).where(Company.tenant_id == context.tenant.id)
     if search:
         statement = statement.where(Company.name.ilike(f"%{search}%"))
     if company_status:
         statement = statement.where(Company.status == company_status)
-    rows = await session.scalars(statement.order_by(Company.created_at.desc()).offset(offset).limit(limit))
+    rows = await session.scalars(
+        statement.order_by(Company.created_at.desc()).offset(offset).limit(limit)
+    )
     return [CompanyResponse.model_validate(row) for row in rows.all()]
 
 
@@ -283,24 +319,29 @@ async def create_company_enrichment_job(
     company_id: UUID,
     request: Request,
     idempotency_key: str = Header(min_length=8, max_length=128, alias="Idempotency-Key"),
-    context: TenantContext = Depends(require_permission("companies:write")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("companies:write")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> CrawlerJobResponse:
-    company = await session.scalar(select(Company).where(
-        Company.id == company_id, Company.tenant_id == context.tenant.id
-    ))
+    company = await session.scalar(
+        select(Company).where(Company.id == company_id, Company.tenant_id == context.tenant.id)
+    )
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found")
     if not company.website_url:
         raise HTTPException(status_code=422, detail="Company has no website to verify")
     job = build_crawler_job(
-        tenant_id=context.tenant.id, company_id=company.id, actor_user_id=context.user.id,
-        website_url=company.website_url, idempotency_key=idempotency_key,
+        tenant_id=context.tenant.id,
+        company_id=company.id,
+        actor_user_id=context.user.id,
+        website_url=company.website_url,
+        idempotency_key=idempotency_key,
     )
-    existing = await session.scalar(select(CrawlerJob).where(
-        CrawlerJob.tenant_id == context.tenant.id,
-        CrawlerJob.idempotency_key == idempotency_key,
-    ))
+    existing = await session.scalar(
+        select(CrawlerJob).where(
+            CrawlerJob.tenant_id == context.tenant.id,
+            CrawlerJob.idempotency_key == idempotency_key,
+        )
+    )
     if existing is not None:
         if existing.request_fingerprint != job.request_fingerprint:
             raise HTTPException(
@@ -312,13 +353,21 @@ async def create_company_enrichment_job(
     # Serialize admission decisions across API processes. Recheck idempotency first so
     # a duplicate request remains idempotent even while the queue is at capacity.
     await session.execute(text("SELECT pg_advisory_xact_lock(681204117)"))
-    queued_global = await session.scalar(select(func.count()).select_from(CrawlerJob).where(
-        CrawlerJob.status == CrawlerJobStatus.QUEUED,
-    ))
-    queued_tenant = await session.scalar(select(func.count()).select_from(CrawlerJob).where(
-        CrawlerJob.tenant_id == context.tenant.id,
-        CrawlerJob.status == CrawlerJobStatus.QUEUED,
-    ))
+    queued_global = await session.scalar(
+        select(func.count())
+        .select_from(CrawlerJob)
+        .where(
+            CrawlerJob.status == CrawlerJobStatus.QUEUED,
+        )
+    )
+    queued_tenant = await session.scalar(
+        select(func.count())
+        .select_from(CrawlerJob)
+        .where(
+            CrawlerJob.tenant_id == context.tenant.id,
+            CrawlerJob.status == CrawlerJobStatus.QUEUED,
+        )
+    )
     if (queued_global or 0) >= 10000:
         raise HTTPException(status_code=429, detail={"code": "crawler_queue_full"})
     if (queued_tenant or 0) >= 100:
@@ -328,8 +377,12 @@ async def create_company_enrichment_job(
     company.enrichment_status = "queued"
     await session.flush()
     await record_audit_event(
-        session, tenant_id=context.tenant.id, actor_user_id=context.user.id,
-        action="company.enrichment_queued", resource_type="crawler_job", resource_id=str(job.id),
+        session,
+        tenant_id=context.tenant.id,
+        actor_user_id=context.user.id,
+        action="company.enrichment_queued",
+        resource_type="crawler_job",
+        resource_id=str(job.id),
         details={"company_id": str(company.id)},
         ip_address=request.client.host if request.client else None,
     )
@@ -337,10 +390,12 @@ async def create_company_enrichment_job(
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        existing = await session.scalar(select(CrawlerJob).where(
-            CrawlerJob.tenant_id == context.tenant.id,
-            CrawlerJob.idempotency_key == idempotency_key,
-        ))
+        existing = await session.scalar(
+            select(CrawlerJob).where(
+                CrawlerJob.tenant_id == context.tenant.id,
+                CrawlerJob.idempotency_key == idempotency_key,
+            )
+        )
         if existing is None or existing.request_fingerprint != job.request_fingerprint:
             raise HTTPException(status_code=409, detail="Idempotency-Key conflict") from None
         return CrawlerJobResponse.model_validate(existing)
@@ -352,13 +407,13 @@ async def create_company_enrichment_job(
 async def enrich_company(
     company_id: UUID,
     request: Request,
-    context: TenantContext = Depends(require_permission("companies:write")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("companies:write")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> CompanyResponse:
     """Compatibility route; clients should migrate to the asynchronous /enrich/jobs route."""
-    company = await session.scalar(select(Company).where(
-        Company.id == company_id, Company.tenant_id == context.tenant.id
-    ))
+    company = await session.scalar(
+        select(Company).where(Company.id == company_id, Company.tenant_id == context.tenant.id)
+    )
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found")
     if not company.website_url:
@@ -382,15 +437,28 @@ async def enrich_company(
         company.phone = result["phones"][0]
     company.enrichment_status = "failed" if result["status"] == "http_error" else "completed"
     company.qualification_score, company.qualification_reasons = qualify_company(company)
-    session.add(SourceRecord(
-        tenant_id=context.tenant.id, company_id=company.id, source_type="website_verification",
-        source_name="company_website", source_url=company.website_url,
-        captured_data={"status": result["status"], "status_code": result.get("status_code"),
-            "emails_found": result.get("emails", []), "phones_found": result.get("phones", [])},
-    ))
+    session.add(
+        SourceRecord(
+            tenant_id=context.tenant.id,
+            company_id=company.id,
+            source_type="website_verification",
+            source_name="company_website",
+            source_url=company.website_url,
+            captured_data={
+                "status": result["status"],
+                "status_code": result.get("status_code"),
+                "emails_found": result.get("emails", []),
+                "phones_found": result.get("phones", []),
+            },
+        )
+    )
     await record_audit_event(
-        session, tenant_id=context.tenant.id, actor_user_id=context.user.id,
-        action="company.enriched", resource_type="company", resource_id=str(company.id),
+        session,
+        tenant_id=context.tenant.id,
+        actor_user_id=context.user.id,
+        action="company.enriched",
+        resource_type="company",
+        resource_id=str(company.id),
         details={"website_status": company.website_status},
         ip_address=request.client.host if request.client else None,
     )
@@ -402,12 +470,12 @@ async def enrich_company(
 @router.get("/crawler-jobs/{job_id}", response_model=CrawlerJobResponse)
 async def get_crawler_job(
     job_id: UUID,
-    context: TenantContext = Depends(require_permission("companies:read")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("companies:read")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> CrawlerJobResponse:
-    job = await session.scalar(select(CrawlerJob).where(
-        CrawlerJob.id == job_id, CrawlerJob.tenant_id == context.tenant.id
-    ))
+    job = await session.scalar(
+        select(CrawlerJob).where(CrawlerJob.id == job_id, CrawlerJob.tenant_id == context.tenant.id)
+    )
     if job is None:
         raise HTTPException(status_code=404, detail="Crawler job not found")
     return CrawlerJobResponse.model_validate(job)
@@ -417,12 +485,14 @@ async def get_crawler_job(
 async def cancel_crawler_job(
     job_id: UUID,
     request: Request,
-    context: TenantContext = Depends(require_permission("companies:write")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("companies:write")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> CrawlerJobResponse:
-    job = await session.scalar(select(CrawlerJob).where(
-        CrawlerJob.id == job_id, CrawlerJob.tenant_id == context.tenant.id
-    ).with_for_update())
+    job = await session.scalar(
+        select(CrawlerJob)
+        .where(CrawlerJob.id == job_id, CrawlerJob.tenant_id == context.tenant.id)
+        .with_for_update()
+    )
     if job is None:
         raise HTTPException(status_code=404, detail="Crawler job not found")
     if job.status in {
@@ -436,8 +506,12 @@ async def cancel_crawler_job(
         job.status = CrawlerJobStatus.CANCELLED
         job.finished_at = datetime.now(UTC)
     await record_audit_event(
-        session, tenant_id=context.tenant.id, actor_user_id=context.user.id,
-        action="crawler_job.cancel_requested", resource_type="crawler_job", resource_id=str(job.id),
+        session,
+        tenant_id=context.tenant.id,
+        actor_user_id=context.user.id,
+        action="crawler_job.cancel_requested",
+        resource_type="crawler_job",
+        resource_id=str(job.id),
         ip_address=request.client.host if request.client else None,
     )
     await session.commit()
@@ -450,11 +524,19 @@ async def qualify_company_for_icp(
     company_id: UUID,
     icp_id: UUID,
     request: Request,
-    context: TenantContext = Depends(require_permission("companies:write")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("companies:write")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> CompanyResponse:
-    company = await session.scalar(select(Company).where(Company.id == company_id, Company.tenant_id == context.tenant.id))
-    icp = await session.scalar(select(ICPProfile).where(ICPProfile.id == icp_id, ICPProfile.tenant_id == context.tenant.id, ICPProfile.is_active.is_(True)))
+    company = await session.scalar(
+        select(Company).where(Company.id == company_id, Company.tenant_id == context.tenant.id)
+    )
+    icp = await session.scalar(
+        select(ICPProfile).where(
+            ICPProfile.id == icp_id,
+            ICPProfile.tenant_id == context.tenant.id,
+            ICPProfile.is_active.is_(True),
+        )
+    )
     if company is None or icp is None:
         raise HTTPException(status_code=404, detail="Company or ICP profile not found")
     result = qualify_against_icp(company, icp)
@@ -463,10 +545,20 @@ async def qualify_company_for_icp(
     company.qualification_breakdown = result
     company.qualification_score = result["fit_score"]
     company.qualification_reasons = [item["reason"] for item in result["checks"]]
-    await record_audit_event(session, tenant_id=context.tenant.id, actor_user_id=context.user.id,
-        action="company.qualified", resource_type="company", resource_id=str(company.id),
-        details={"icp_id": str(icp.id), "fit_score": result["fit_score"], "opportunity_score": result["opportunity_score"]},
-        ip_address=request.client.host if request.client else None)
+    await record_audit_event(
+        session,
+        tenant_id=context.tenant.id,
+        actor_user_id=context.user.id,
+        action="company.qualified",
+        resource_type="company",
+        resource_id=str(company.id),
+        details={
+            "icp_id": str(icp.id),
+            "fit_score": result["fit_score"],
+            "opportunity_score": result["opportunity_score"],
+        },
+        ip_address=request.client.host if request.client else None,
+    )
     await session.commit()
     await session.refresh(company)
     return CompanyResponse.model_validate(company)
@@ -477,8 +569,8 @@ async def update_company_status(
     company_id: UUID,
     payload: CompanyStatusUpdate,
     request: Request,
-    context: TenantContext = Depends(require_permission("companies:write")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("companies:write")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> CompanyResponse:
     company = await session.scalar(
         select(Company).where(Company.id == company_id, Company.tenant_id == context.tenant.id)
@@ -505,8 +597,8 @@ async def update_company_status(
 @router.get("/companies/{company_id}/sources", response_model=list[SourceRecordResponse])
 async def list_company_sources(
     company_id: UUID,
-    context: TenantContext = Depends(require_permission("companies:read")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("companies:read")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[SourceRecordResponse]:
     company_exists = await session.scalar(
         select(Company.id).where(Company.id == company_id, Company.tenant_id == context.tenant.id)
@@ -521,13 +613,17 @@ async def list_company_sources(
     return [SourceRecordResponse.model_validate(row) for row in rows.all()]
 
 
-@router.post("/companies/{company_id}/decision-makers", response_model=DecisionMakerResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/companies/{company_id}/decision-makers",
+    response_model=DecisionMakerResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_decision_maker(
     company_id: UUID,
     payload: DecisionMakerCreate,
     request: Request,
-    context: TenantContext = Depends(require_permission("companies:write")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("companies:write")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> DecisionMakerResponse:
     company = await session.scalar(
         select(Company).where(Company.id == company_id, Company.tenant_id == context.tenant.id)
@@ -538,7 +634,12 @@ async def create_decision_maker(
         tenant_id=context.tenant.id,
         company_id=company.id,
         normalized_name=normalize_person_name(payload.full_name),
-        **{**payload.model_dump(), "role_category": payload.role_category if payload.role_category.value != "other" else classify_job_title(payload.job_title)},
+        **{
+            **payload.model_dump(),
+            "role_category": payload.role_category
+            if payload.role_category.value != "other"
+            else classify_job_title(payload.job_title),
+        },
     )
     session.add(person)
     await session.flush()
@@ -560,8 +661,8 @@ async def create_decision_maker(
 @router.get("/companies/{company_id}/decision-makers", response_model=list[DecisionMakerResponse])
 async def list_decision_makers(
     company_id: UUID,
-    context: TenantContext = Depends(require_permission("companies:read")),
-    session: AsyncSession = Depends(get_db_session),
+    context: TenantContext = Depends(require_permission("companies:read")),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> list[DecisionMakerResponse]:
     company_exists = await session.scalar(
         select(Company.id).where(Company.id == company_id, Company.tenant_id == context.tenant.id)
