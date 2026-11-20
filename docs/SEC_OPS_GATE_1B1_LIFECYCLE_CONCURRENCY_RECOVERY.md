@@ -22,6 +22,7 @@
 5. Repository claims had no optional tenant restriction. `claim_next(tenant_id)` now limits candidates for tenant-bound use; the dedicated trusted worker uses global claims.
 6. The existing unit API stub had two scalar answers. It was updated for the additional idempotency query.
 7. Actions run `44750329352` exposed an incorrect test expectation: three queued jobs in one tenant yielded two claims, correctly respecting the existing per-tenant active cap of two. The test now expects two claims and one queued job; no production cap was weakened.
+8. A code review after run `44750602359` found that heartbeat and completion captured the wall clock before acquiring a row lock. A blocked operation could compare against stale time. Both now recheck expiry after acquiring the lock; claim captures its clock after acquiring the advisory lock. A PostgreSQL row-lock test exercises renewal at the boundary.
 
 ## Invariants and semantics
 
@@ -41,15 +42,17 @@
 | Cancellation | `test_cancel_revokes_running_lease_and_prevents_result`, `test_expired_cancel_and_retry_exhaustion` | Awaiting Actions |
 | Idempotency and conflict | `test_concurrent_idempotent_admission_and_conflict` | Awaiting Actions |
 | Queue and active capacity | `test_tenant_queue_capacity_and_release`, `test_global_and_tenant_active_capacity` | Awaiting Actions |
+| Renewal after blocked lock, completion/cancel race | `test_renewal_rechecks_expiry_after_row_lock`, `test_completion_cancel_race_has_one_terminal_winner` | Awaiting Actions |
+| Terminal idempotency | `test_terminal_idempotency_and_second_cancel` | Awaiting Actions |
 
 All integration tests use the existing fail-closed CI preflight and create synthetic rows with explicit cleanup. Concurrent contenders use separate sessions and an event; the lock-holding test coordinates via an open transaction. Lease tests manipulate timestamps rather than waiting for wall-clock expiry. No real websites, commercial APIs or credentials are used.
 
-Local PostgreSQL execution is unavailable: Docker daemon access is denied. The Actions `postgres-integration` job is the required execution venue. Do not interpret a green unit suite as PostgreSQL evidence. Run `44750329352` had backend and frontend PASS, PostgreSQL FAIL (one test assertion; nine integration tests passed). Record the subsequent workflow run ID, URL, job conclusions and new test counts after push.
+Local PostgreSQL execution is unavailable: Docker daemon access is denied. The Actions `postgres-integration` job is the required execution venue. Do not interpret a green unit suite as PostgreSQL evidence. Run `44750329352` had backend and frontend PASS, PostgreSQL FAIL (one test assertion; nine integration tests passed). Run [`44750602359`](https://github.com/Arthur-Levi/Levi-Intelligence/actions/runs/44750602359) had backend PASS (214 tests), PostgreSQL PASS (10 tests), and frontend PASS. The three later integration tests and expiry fix require a new Actions run.
 
 ## Residual risks and acceptance decision
 
 - **PENDING** until the new PostgreSQL integration tests and all CI jobs complete and their logs confirm execution. No gate control is marked PASS yet.
 - Attempt history is represented only by count and current token; there is no durable per-attempt ledger. A separate worker identity field is absent.
 - Structured event coverage is incomplete; only claim and API audit events currently exist. Critical transaction safety does not depend on logging.
-- No dedicated database tests yet prove simultaneous renewal versus expiration, completion versus cancellation, global queue threshold at 10,000, connection loss, restart, or external side-effect compensation. These controls cannot receive PASS without further evidence.
+- No dedicated database tests yet prove the global queue threshold at 10,000, connection loss, restart, or external side-effect compensation. These controls cannot receive PASS without further evidence.
 - The trusted worker claims globally. The optional tenant filter applies when a tenant-bound caller uses the repository; unrestricted SQL access is outside the application isolation model.

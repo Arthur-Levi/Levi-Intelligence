@@ -31,9 +31,9 @@ class PostgresCrawlerJobRepository:
         )
 
     async def claim_next(self, tenant_id: UUID | None = None) -> CrawlerJobInput | None:
-        now = datetime.now(UTC)
         async with self._factory() as session, session.begin():
             await session.execute(text("SELECT pg_advisory_xact_lock(681204117)"))
+            now = datetime.now(UTC)
             # Expired attempts are retried with bounded exponential backoff or dead-lettered.
             expired = (CrawlerJob.status == CrawlerJobStatus.RUNNING) & (
                 CrawlerJob.lease_expires_at <= now
@@ -106,7 +106,6 @@ class PostgresCrawlerJobRepository:
             return self._payload(selected, token)
 
     async def heartbeat(self, job: CrawlerJobInput) -> bool:
-        now = datetime.now(UTC)
         async with self._factory() as session, session.begin():
             row = await session.scalar(
                 select(CrawlerJob)
@@ -116,12 +115,12 @@ class PostgresCrawlerJobRepository:
                     CrawlerJob.company_id == job.company_id,
                     CrawlerJob.status == CrawlerJobStatus.RUNNING,
                     CrawlerJob.lease_token == job.lease_token,
-                    CrawlerJob.lease_expires_at > now,
                     CrawlerJob.cancel_requested_at.is_(None),
                 )
                 .with_for_update()
             )
-            if row is None:
+            now = datetime.now(UTC)
+            if row is None or row.lease_expires_at is None or row.lease_expires_at <= now:
                 return False
             row.heartbeat_at = now
             row.lease_expires_at = now + timedelta(seconds=LEASE_SECONDS)
@@ -139,8 +138,7 @@ class PostgresCrawlerJobRepository:
             )
 
     async def _owned(self, session: AsyncSession, job: CrawlerJobInput) -> CrawlerJob | None:
-        now = datetime.now(UTC)
-        return await session.scalar(
+        row = await session.scalar(
             select(CrawlerJob)
             .where(
                 CrawlerJob.id == job.job_id,
@@ -148,10 +146,14 @@ class PostgresCrawlerJobRepository:
                 CrawlerJob.company_id == job.company_id,
                 CrawlerJob.status == CrawlerJobStatus.RUNNING,
                 CrawlerJob.lease_token == job.lease_token,
-                CrawlerJob.lease_expires_at > now,
             )
             .with_for_update()
         )
+        if row is None or row.lease_expires_at is None:
+            return None
+        if row.lease_expires_at <= datetime.now(UTC):
+            return None
+        return row
 
     async def persist_result(self, job: CrawlerJobInput, result: CrawlerJobResult) -> None:
         validated = CrawlerJobResult.model_validate(result)

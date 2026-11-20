@@ -352,3 +352,92 @@ async def test_global_and_tenant_active_capacity(world):
             row.lease_expires_at = datetime.now(UTC) + timedelta(seconds=90)
     await add_jobs(factory, tenants[0], users[0], companies[0])
     assert await repo.claim_next() is None  # eight active slots globally
+
+
+@pytest.mark.asyncio
+async def test_renewal_rechecks_expiry_after_row_lock(world):
+    factory, tenants, users, companies = world
+    repo = PostgresCrawlerJobRepository(factory)
+    ids = await add_jobs(factory, tenants[0], users[0], companies[0])
+    claim = await repo.claim_next(tenants[0])
+    assert claim is not None
+    started = asyncio.Event()
+
+    async def renew():
+        started.set()
+        return await repo.heartbeat(claim)
+
+    async with factory() as holder:
+        async with holder.begin():
+            row = await holder.scalar(
+                select(CrawlerJob).where(CrawlerJob.id == ids[0]).with_for_update()
+            )
+            assert row is not None
+            task = asyncio.create_task(renew())
+            await started.wait()
+            row.lease_expires_at = datetime.now(UTC) - timedelta(microseconds=1)
+        assert not await asyncio.wait_for(task, 5)
+    assert await repo.claim_next(tenants[0]) is None  # recovery schedules backoff
+
+
+@pytest.mark.asyncio
+async def test_completion_cancel_race_has_one_terminal_winner(world):
+    factory, tenants, users, companies = world
+    repo = PostgresCrawlerJobRepository(factory)
+    ids = await add_jobs(factory, tenants[0], users[0], companies[0])
+    claim = await repo.claim_next(tenants[0])
+    assert claim is not None
+    ctx = await context(factory, tenants[0], users[0])
+    gate = asyncio.Event()
+
+    async def complete():
+        await gate.wait()
+        try:
+            await repo.persist_result(claim, result())
+            return "completed"
+        except RuntimeError:
+            return "rejected"
+
+    async def cancel():
+        async with factory() as session:
+            await gate.wait()
+            try:
+                await cancel_crawler_job(ids[0], request(), ctx, session)
+                return "cancelled"
+            except HTTPException as exc:
+                assert exc.status_code == 409
+                return "rejected"
+
+    tasks = [asyncio.create_task(complete()), asyncio.create_task(cancel())]
+    gate.set()
+    outcomes = await asyncio.gather(*tasks)
+    async with factory() as session:
+        row = await session.get(CrawlerJob, ids[0])
+        sources = await session.scalar(
+            select(func.count())
+            .select_from(SourceRecord)
+            .where(SourceRecord.tenant_id == tenants[0])
+        )
+    assert (row.status, sources, outcomes.count("rejected")) in {
+        (CrawlerJobStatus.COMPLETED, 1, 1),
+        (CrawlerJobStatus.CANCELLED, 0, 1),
+    }
+
+
+@pytest.mark.asyncio
+async def test_terminal_idempotency_and_second_cancel(world):
+    factory, tenants, users, companies = world
+    ctx = await context(factory, tenants[0], users[0])
+    key = f"gate-{uuid4().hex}"
+    async with factory() as session:
+        first = await create_company_enrichment_job(companies[0], request(), key, ctx, session)
+    async with factory() as session:
+        cancelled = await cancel_crawler_job(first.id, request(), ctx, session)
+    assert cancelled.status == CrawlerJobStatus.CANCELLED
+    async with factory() as session:
+        repeated = await create_company_enrichment_job(companies[0], request(), key, ctx, session)
+    assert repeated.id == first.id and repeated.status == CrawlerJobStatus.CANCELLED
+    async with factory() as session:
+        with pytest.raises(HTTPException) as exc:
+            await cancel_crawler_job(first.id, request(), ctx, session)
+    assert exc.value.status_code == 409
