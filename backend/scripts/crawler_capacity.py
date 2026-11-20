@@ -10,6 +10,7 @@ import statistics
 import subprocess
 import time
 from collections import Counter
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -105,7 +106,7 @@ def aggregate_reports(reports: list[dict]) -> dict:
     return result
 
 
-def count_wait_snapshot(rows: list[tuple]) -> tuple[Counter[str], int]:
+def count_wait_snapshot(rows: Iterable[Sequence[object]]) -> tuple[Counter[str], int]:
     """Count waiting sessions in one observation, never distinct wait events."""
     counts: Counter[str] = Counter()
     waiting = 0
@@ -349,7 +350,7 @@ async def benchmark(size: int, workers: int, seconds: int) -> dict:
             "tenant_isolation": "PASS"
             if len(records) == size
             and all(
-                (row := row_by_string_id.get(record.captured_data.get("crawler_job_id")))
+                (row := row_by_string_id.get(str(record.captured_data.get("crawler_job_id"))))
                 is not None
                 and row.tenant_id == record.tenant_id
                 for record in records

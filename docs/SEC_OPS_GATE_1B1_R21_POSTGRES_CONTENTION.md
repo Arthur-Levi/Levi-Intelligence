@@ -2,7 +2,7 @@
 
 ## Scope and decision
 
-This gate measures synthetic PostgreSQL lifecycle processing. It does not measure website fetching, admission throughput, production load, or sustained crawling capacity. Acceptance remains **INCONCLUSIVE** until three successful, same-revision 1,000-job runs exist for each of 1, 2, 4, and 8 workers, the diagnostic evidence is reviewed, and relevant CI is green.
+This gate measures synthetic PostgreSQL lifecycle processing. It does not measure website fetching, admission throughput, production load, or sustained crawling capacity. The 12-run matrix is complete at commit `8ff241d765d7144e1c5ec3d7ca1c4b66237f3e67`. Acceptance remains **INCONCLUSIVE** pending a green feature-branch CI result and server-side query/transaction timing evidence.
 
 ## Observed baseline (single runs)
 
@@ -28,13 +28,13 @@ The 64-candidate query uses the `(status, created_at)` index for queue order but
 
 ## Contention assessment
 
-The global advisory lock is a **structural serialization point** for claims. The supplied 8-worker run shows higher claim p99 and nonzero sampled lock waits than the 2-worker run, but cannot establish that the 158 samples were advisory waits. Query/index inefficiency, transaction duration, pool pressure, Python scheduling and runner variability remain open factors. No definitive first bottleneck is assigned without the repeated matrix and wait classification.
+The global advisory lock is a **structural serialization point** for claims. The supplied earlier 8-worker run shows higher claim p99 and nonzero sampled lock waits than the 2-worker run, but cannot establish that the 158 samples were advisory waits. In the new same-revision matrix, 4-worker runs recorded 89–95 advisory waiting-session samples and 0–1 other-lock samples; 8-worker runs recorded 518–694 advisory and 1–2 other samples. The maximum simultaneous waiting-session counts were 3 and 7 respectively. At 1 and 2 workers, no lock waits were sampled. The 8-worker median claim p99 was 187.043 ms versus 27.520 ms at 2 workers, while median throughput fell from 82.586 to 64.013 jobs/s. These observations support advisory-lock serialization as a material contributor under this workload. They do not measure lock-hold time, demonstrate that it is the only bottleneck, or exclude runner variability, Python scheduling and query cost. Row/transaction lock waits were rare in the samples, but short waits may have been missed. Connection peaks of 9–10 at 8 workers stayed below the 12-connection ceiling, so connection exhaustion was not observed.
 
 Any later lock change must preserve atomic global and tenant active counts, row selection, attempt generation, lease ownership, fencing against stale writes, retry limits and rollback behavior across processes. Gate R2.1 makes no lock or lifecycle changes.
 
 ## Gate 1B.1-R3 work
 
-1. Execute and preserve the 12-run matrix at one commit and inspect PostgreSQL wait categories and per-worker fairness.
-2. Capture sanitized `EXPLAIN (ANALYZE, BUFFERS)` for the claim and recovery queries with the 1,000-job fixture, plus transaction/lock-hold timings using disposable-only instrumentation.
-3. Exercise concurrent admission, stale writes, lease expiry/retry recovery and failure paths in a separate bounded workload; this completion-only benchmark marks them NOT TESTED.
-4. Compare database-side CPU and pool checkout time before proposing an index or claim algorithm change.
+1. Capture sanitized `EXPLAIN (ANALYZE, BUFFERS)` for the claim and recovery queries with the 1,000-job fixture, plus transaction/lock-hold timings using disposable-only instrumentation.
+2. Exercise concurrent admission, stale writes, lease expiry/retry recovery and failure paths in a separate bounded workload; this completion-only benchmark marks them NOT TESTED.
+3. Compare database-side CPU and pool checkout time before proposing an index or claim algorithm change.
+4. Repeat the matrix on an independent runner with a fresh PostgreSQL process per run to quantify cache and runner effects.
