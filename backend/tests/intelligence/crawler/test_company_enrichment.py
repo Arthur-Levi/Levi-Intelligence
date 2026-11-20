@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
-from app.api.v1.endpoints import prospecting
+from app.crawler_jobs.contracts import CrawlerJobInput, CrawlerJobResult
+from app.crawler_jobs.worker import execute_crawler_job
 from app.intelligence.crawler.exceptions import UnsafeTargetError
 from app.intelligence.crawler.http_transport import FetchResponse, SecureHTTPTransport
 from app.intelligence.crawler.robots_policy import RobotsDeniedError
-from app.models.prospecting import Company, CompanyStatus
 from app.services.company_enrichment import UnsafeWebsiteError, verify_and_extract
 
 
@@ -109,57 +108,35 @@ async def test_malformed_html_and_missing_metadata_produce_no_business_facts(
 
 
 @pytest.mark.asyncio
-async def test_http_error_does_not_mark_company_enrichment_completed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    now = datetime.now(UTC)
-    company = Company(
-        id=uuid4(),
-        tenant_id=uuid4(),
-        name="Example Company",
-        website_url="https://example.com/",
-        address={},
-        status=CompanyStatus.NEW,
-        qualification_reasons=[],
-        created_at=now,
-        updated_at=now,
-        website_status="unknown",
-        enrichment_status="pending",
-        qualification_breakdown={},
+async def test_http_error_worker_result_keeps_unverified_status() -> None:
+    job = CrawlerJobInput(
+        job_id=uuid4(), tenant_id=uuid4(), company_id=uuid4(),
+        website_url="https://example.com/", idempotency_key="request-0001",
     )
 
-    class Session:
-        async def scalar(self, statement: object) -> Company:
-            return company
+    class Repository:
+        result: CrawlerJobResult | None = None
 
-        def add(self, instance: object) -> None:
+        async def claim_next(self) -> CrawlerJobInput | None:
             return None
 
-        async def commit(self) -> None:
-            return None
+        async def cancellation_requested(self, job_id, tenant_id) -> bool:
+            return False
 
-        async def refresh(self, instance: object) -> None:
-            return None
+        async def persist_result(self, claimed, result: CrawlerJobResult) -> None:
+            self.result = result
+
+        async def persist_failure(self, claimed, failure_code: str) -> None:
+            pytest.fail(f"unexpected failure: {failure_code}")
+
+        async def persist_cancellation(self, claimed) -> None:
+            pytest.fail("unexpected cancellation")
 
     async def http_error(url: str) -> dict[str, object]:
-        return {"status": "http_error", "status_code": 503, "checked_at": now}
+        return {"status": "http_error", "status_code": 503, "checked_at": datetime.now(UTC)}
 
-    async def no_audit(*args: object, **kwargs: object) -> None:
-        return None
-
-    monkeypatch.setattr(prospecting, "verify_and_extract", http_error)
-    monkeypatch.setattr(prospecting, "record_audit_event", no_audit)
-
-    await prospecting.enrich_company(
-        company.id,
-        SimpleNamespace(client=None),  # type: ignore[arg-type]
-        SimpleNamespace(
-            tenant=SimpleNamespace(id=company.tenant_id),
-            user=SimpleNamespace(id=uuid4()),
-        ),  # type: ignore[arg-type]
-        Session(),  # type: ignore[arg-type]
-    )
-
-    assert company.website_status == "http_error"
-    assert company.enrichment_status == "failed"
-    assert company.last_verified_at is None
+    repository = Repository()
+    assert await execute_crawler_job(job, repository=repository, crawler=http_error) == "completed"
+    assert repository.result is not None
+    assert repository.result.status == "http_error"
+    assert repository.result.emails == [] and repository.result.phones == []

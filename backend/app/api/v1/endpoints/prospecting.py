@@ -39,7 +39,6 @@ from app.schemas.prospecting import (
     SourceRecordResponse,
 )
 from app.services.audit import record_audit_event
-from app.services.company_enrichment import UnsafeWebsiteError, verify_and_extract
 from app.services.company_normalization import normalize_company_name, normalize_website
 from app.services.decision_maker_intelligence import classify_job_title, normalize_person_name
 from app.services.qualification import qualify_against_icp, qualify_company
@@ -433,68 +432,22 @@ async def create_company_enrichment_job(
     return CrawlerJobResponse.model_validate(job)
 
 
-@router.post("/companies/{company_id}/enrich", response_model=CompanyResponse)
+@router.post(
+    "/companies/{company_id}/enrich",
+    response_model=CrawlerJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def enrich_company(
     company_id: UUID,
     request: Request,
+    idempotency_key: str = Header(min_length=8, max_length=128, alias="Idempotency-Key"),
     context: TenantContext = Depends(require_permission("companies:write")),  # noqa: B008
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
-) -> CompanyResponse:
-    """Compatibility route; clients should migrate to the asynchronous /enrich/jobs route."""
-    company = await session.scalar(
-        select(Company).where(Company.id == company_id, Company.tenant_id == context.tenant.id)
+) -> CrawlerJobResponse:
+    """Legacy URL with the canonical durable crawler admission contract."""
+    return await create_company_enrichment_job(
+        company_id, request, idempotency_key, context, session
     )
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
-    if not company.website_url:
-        raise HTTPException(status_code=422, detail="Company has no website to verify")
-    try:
-        result = await verify_and_extract(company.website_url)
-    except UnsafeWebsiteError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
-    except Exception:
-        company.website_status = "verification_error"
-        company.enrichment_status = "failed"
-        await session.commit()
-        raise HTTPException(status_code=502, detail="Website verification failed") from None
-    company.website_status = result["status"]
-    company.website_checked_at = result["checked_at"]
-    if result["status"] != "http_error":
-        company.last_verified_at = result["checked_at"]
-    if not company.email and result.get("emails"):
-        company.email = result["emails"][0]
-    if not company.phone and result.get("phones"):
-        company.phone = result["phones"][0]
-    company.enrichment_status = "failed" if result["status"] == "http_error" else "completed"
-    company.qualification_score, company.qualification_reasons = qualify_company(company)
-    session.add(
-        SourceRecord(
-            tenant_id=context.tenant.id,
-            company_id=company.id,
-            source_type="website_verification",
-            source_name="company_website",
-            source_url=company.website_url,
-            captured_data={
-                "status": result["status"],
-                "status_code": result.get("status_code"),
-                "emails_found": result.get("emails", []),
-                "phones_found": result.get("phones", []),
-            },
-        )
-    )
-    await record_audit_event(
-        session,
-        tenant_id=context.tenant.id,
-        actor_user_id=context.user.id,
-        action="company.enriched",
-        resource_type="company",
-        resource_id=str(company.id),
-        details={"website_status": company.website_status},
-        ip_address=request.client.host if request.client else None,
-    )
-    await session.commit()
-    await session.refresh(company)
-    return CompanyResponse.model_validate(company)
 
 
 @router.get("/crawler-jobs/{job_id}", response_model=CrawlerJobResponse)
