@@ -21,6 +21,7 @@
 4. The API checked idempotency before taking the admission lock but did not recheck inside it. It now rechecks after lock acquisition; insert, audit and commit are within the integrity-error handling block.
 5. Repository claims had no optional tenant restriction. `claim_next(tenant_id)` now limits candidates for tenant-bound use; the dedicated trusted worker uses global claims.
 6. The existing unit API stub had two scalar answers. It was updated for the additional idempotency query.
+7. Actions run `44750329352` exposed an incorrect test expectation: three queued jobs in one tenant yielded two claims, correctly respecting the existing per-tenant active cap of two. The test now expects two claims and one queued job; no production cap was weakened.
 
 ## Invariants and semantics
 
@@ -43,7 +44,7 @@
 
 All integration tests use the existing fail-closed CI preflight and create synthetic rows with explicit cleanup. Concurrent contenders use separate sessions and an event; the lock-holding test coordinates via an open transaction. Lease tests manipulate timestamps rather than waiting for wall-clock expiry. No real websites, commercial APIs or credentials are used.
 
-Local PostgreSQL execution is unavailable: Docker daemon access is denied. The Actions `postgres-integration` job is the required execution venue. Do not interpret a green unit suite as PostgreSQL evidence. Record the workflow run ID, URL, job conclusions and new test counts after push.
+Local PostgreSQL execution is unavailable: Docker daemon access is denied. The Actions `postgres-integration` job is the required execution venue. Do not interpret a green unit suite as PostgreSQL evidence. Run `44750329352` had backend and frontend PASS, PostgreSQL FAIL (one test assertion; nine integration tests passed). Record the subsequent workflow run ID, URL, job conclusions and new test counts after push.
 
 ## Residual risks and acceptance decision
 

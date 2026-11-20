@@ -125,11 +125,14 @@ async def test_claim_races_and_repeated_disputes(world):
         contenders = [asyncio.create_task(contender()) for _ in range(10)]
         gate.set()
         claims = [item for item in await asyncio.gather(*contenders) if item]
-        assert len(claims) == (3 if _ == 0 else 0)
-        assert {item.job_id for item in claims} == set(ids) if _ == 0 else not claims
+        assert len(claims) == (2 if _ == 0 else 0)
+        assert {item.job_id for item in claims} <= set(ids)
     async with factory() as session:
         rows = (await session.scalars(select(CrawlerJob).where(CrawlerJob.id.in_(ids)))).all()
-        assert all(row.attempts == 1 and row.status == CrawlerJobStatus.RUNNING for row in rows)
+        assert (
+            sum(row.attempts == 1 and row.status == CrawlerJobStatus.RUNNING for row in rows) == 2
+        )
+        assert sum(row.attempts == 0 and row.status == CrawlerJobStatus.QUEUED for row in rows) == 1
 
 
 @pytest.mark.asyncio
