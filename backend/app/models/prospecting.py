@@ -243,6 +243,7 @@ class DecisionMaker(UUIDPrimaryKey, TimestampMixin, Base):
     __table_args__ = (
         Index("ix_decision_makers_tenant_company", "tenant_id", "company_id"),
         Index("ix_decision_makers_tenant_confidence", "tenant_id", "confidence_score"),
+        UniqueConstraint("tenant_id", "id", name="uq_decision_makers_tenant_id_id"),
         UniqueConstraint(
             "tenant_id", "company_id", "normalized_name", name="uq_decision_maker_company_name"
         ),

@@ -18,6 +18,9 @@
 - Na segunda execução, a migration 0002 chegou à criação de `source_records` e falhou
   porque a chave estrangeira composta `(tenant_id, prospecting_run_id)` referenciava
   `(tenant_id, id)` sem uma constraint UNIQUE correspondente em `prospecting_runs`.
+- Na terceira execução, a migration 0004 falhou ao criar a FK tenant-scoped de
+  `decision_maker_evidence`, pois `decision_makers` também não tinha UNIQUE
+  `(tenant_id, id)` no schema migrado.
 
 ## Correções
 
@@ -33,6 +36,8 @@
   mesmo tipo.
 - A migration 0002 agora cria a constraint UNIQUE composta de `prospecting_runs`, em
   conformidade com a chave estrangeira e com o modelo ORM.
+- A migration 0002 e o modelo ORM agora também declaram UNIQUE `(tenant_id, id)` para
+  `decision_makers`, preservando a integridade das FKs tenant-scoped criadas em 0004.
 - `frontend/package-lock.json` foi gerado a partir do `package.json`; o workflow mantém
   `npm ci`. Os tipos de React/React DOM foram declarados em `devDependencies`, e
   `vite/client` foi habilitado no `tsconfig` para os imports CSS.
@@ -58,8 +63,8 @@ Resultados desta revisão:
 - A tentativa da suíte unitária completa não terminou neste ambiente; os resultados
   acima cobrem os testes diretamente relevantes para as mudanças.
 
-PostgreSQL e Docker não foram executados localmente. Nas execuções remotas 44741176309 e
-44741560755, o serviço iniciou e o preflight passou. A primeira falhou pela criação
-duplicada do enum; a segunda revelou a constraint UNIQUE composta ausente em
-`prospecting_runs`. Backend e frontend passaram em ambas. A correção da constraint e os
-testes de integração aguardam a execução remota seguinte.
+PostgreSQL e Docker não foram executados localmente. Nas execuções remotas 44741176309,
+44741560755 e 44741784432, o serviço iniciou e o preflight passou. As falhas sucessivas
+foram: criação duplicada do enum, UNIQUE composta ausente em `prospecting_runs` e UNIQUE
+composta ausente em `decision_makers`. Backend e frontend passaram nas três execuções.
+A validação desta última constraint e os testes de integração aguardam a próxima execução.
