@@ -30,13 +30,13 @@ class PostgresCrawlerJobRepository:
             lease_token=token,
         )
 
-    async def claim_next(self) -> CrawlerJobInput | None:
+    async def claim_next(self, tenant_id: UUID | None = None) -> CrawlerJobInput | None:
         now = datetime.now(UTC)
         async with self._factory() as session, session.begin():
             await session.execute(text("SELECT pg_advisory_xact_lock(681204117)"))
             # Expired attempts are retried with bounded exponential backoff or dead-lettered.
             expired = (CrawlerJob.status == CrawlerJobStatus.RUNNING) & (
-                CrawlerJob.lease_expires_at < now
+                CrawlerJob.lease_expires_at <= now
             )
             rows = await session.scalars(
                 select(CrawlerJob).where(expired).with_for_update(skip_locked=True).limit(32)
@@ -44,7 +44,10 @@ class PostgresCrawlerJobRepository:
             for row in rows:
                 row.lease_token = None
                 row.lease_expires_at = None
-                if row.attempts >= MAX_ATTEMPTS:
+                if row.cancel_requested_at is not None:
+                    row.status = CrawlerJobStatus.CANCELLED
+                    row.finished_at = now
+                elif row.attempts >= MAX_ATTEMPTS:
                     row.status = CrawlerJobStatus.FAILED
                     row.failure_code = "retry_exhausted"
                     row.finished_at = now
@@ -62,10 +65,11 @@ class PostgresCrawlerJobRepository:
             )
             if (global_running or 0) >= 8:
                 return None
-            candidates = await session.scalars(
+            candidate_query = (
                 select(CrawlerJob)
                 .where(
                     CrawlerJob.status == CrawlerJobStatus.QUEUED,
+                    CrawlerJob.cancel_requested_at.is_(None),
                     or_(CrawlerJob.next_attempt_at.is_(None), CrawlerJob.next_attempt_at <= now),
                     CrawlerJob.attempts < MAX_ATTEMPTS,
                 )
@@ -73,6 +77,9 @@ class PostgresCrawlerJobRepository:
                 .with_for_update(skip_locked=True)
                 .limit(64)
             )
+            if tenant_id is not None:
+                candidate_query = candidate_query.where(CrawlerJob.tenant_id == tenant_id)
+            candidates = await session.scalars(candidate_query)
             selected: CrawlerJob | None = None
             for candidate in candidates:
                 tenant_running = await session.scalar(
@@ -110,6 +117,7 @@ class PostgresCrawlerJobRepository:
                     CrawlerJob.status == CrawlerJobStatus.RUNNING,
                     CrawlerJob.lease_token == job.lease_token,
                     CrawlerJob.lease_expires_at > now,
+                    CrawlerJob.cancel_requested_at.is_(None),
                 )
                 .with_for_update()
             )
@@ -205,7 +213,7 @@ class PostgresCrawlerJobRepository:
             failure_code = "crawler_error"
         async with self._factory() as session, session.begin():
             row = await self._owned(session, job)
-            if row is None:
+            if row is None or row.cancel_requested_at is not None:
                 raise RuntimeError("crawler lease is no longer owned")
             row.failure_code = failure_code
             row.status = CrawlerJobStatus.FAILED

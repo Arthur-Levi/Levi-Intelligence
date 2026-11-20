@@ -105,7 +105,7 @@ async def test_api_creates_auditable_tenant_company_job(monkeypatch) -> None:
 
     class Session:
         def __init__(self) -> None:
-            self.answers = [company, None]
+            self.answers = [company, None, None]
             self.count_answers = [0, 0]
             self.added: list[object] = []
             self.committed = False

@@ -353,6 +353,19 @@ async def create_company_enrichment_job(
     # Serialize admission decisions across API processes. Recheck idempotency first so
     # a duplicate request remains idempotent even while the queue is at capacity.
     await session.execute(text("SELECT pg_advisory_xact_lock(681204117)"))
+    existing = await session.scalar(
+        select(CrawlerJob).where(
+            CrawlerJob.tenant_id == context.tenant.id,
+            CrawlerJob.idempotency_key == idempotency_key,
+        )
+    )
+    if existing is not None:
+        if existing.request_fingerprint != job.request_fingerprint:
+            raise HTTPException(
+                status_code=409,
+                detail="Idempotency-Key was already used with a different request",
+            )
+        return CrawlerJobResponse.model_validate(existing)
     queued_global = await session.scalar(
         select(func.count())
         .select_from(CrawlerJob)
@@ -373,20 +386,20 @@ async def create_company_enrichment_job(
     if (queued_tenant or 0) >= 100:
         raise HTTPException(status_code=429, detail={"code": "crawler_tenant_queue_full"})
 
-    session.add(job)
-    company.enrichment_status = "queued"
-    await session.flush()
-    await record_audit_event(
-        session,
-        tenant_id=context.tenant.id,
-        actor_user_id=context.user.id,
-        action="company.enrichment_queued",
-        resource_type="crawler_job",
-        resource_id=str(job.id),
-        details={"company_id": str(company.id)},
-        ip_address=request.client.host if request.client else None,
-    )
     try:
+        session.add(job)
+        company.enrichment_status = "queued"
+        await session.flush()
+        await record_audit_event(
+            session,
+            tenant_id=context.tenant.id,
+            actor_user_id=context.user.id,
+            action="company.enrichment_queued",
+            resource_type="crawler_job",
+            resource_id=str(job.id),
+            details={"company_id": str(company.id)},
+            ip_address=request.client.host if request.client else None,
+        )
         await session.commit()
     except IntegrityError:
         await session.rollback()
@@ -502,9 +515,10 @@ async def cancel_crawler_job(
     }:
         raise HTTPException(status_code=409, detail="A terminal crawler job cannot be cancelled")
     job.cancel_requested_at = datetime.now(UTC)
-    if job.status == CrawlerJobStatus.QUEUED:
-        job.status = CrawlerJobStatus.CANCELLED
-        job.finished_at = datetime.now(UTC)
+    job.status = CrawlerJobStatus.CANCELLED
+    job.finished_at = datetime.now(UTC)
+    job.lease_token = None
+    job.lease_expires_at = None
     await record_audit_event(
         session,
         tenant_id=context.tenant.id,
