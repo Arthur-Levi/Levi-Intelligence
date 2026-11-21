@@ -65,6 +65,11 @@ async def test_pending_ledger_progress_fencing_and_priority(shared_world):  # no
         assert pending.lease_token is None and pending.lease_expires_at <= datetime.now(UTC)
         assert pending.attempts == 1
         assert ledger is not None and ledger.outcome == "expired" and ledger.ended_at is not None
+        assert await session.scalar(select(func.count()).select_from(CrawlerJob).where(
+            CrawlerJob.tenant_id == tenants[0],
+            CrawlerJob.status == CrawlerJobStatus.RUNNING,
+            CrawlerJob.lease_expires_at > datetime.now(UTC),
+        )) == 0
         first_end = ledger.ended_at
     ctx = await context(factory, tenants[0], users[0])
     async with factory() as session:
