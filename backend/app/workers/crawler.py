@@ -79,7 +79,8 @@ async def run() -> None:
                 logger.critical("crawler_child_ignored_cancellation")
                 os._exit(1)
             if error is not None:
-                logger.error("crawler_worker_task_failed", exc_info=error)
+                # Exception text can contain a URL or response data.
+                logger.error("crawler_worker_task_failed")
 
     async def bounded_wait(tasks: set[asyncio.Task[None]], seconds: float) -> None:
         if not tasks:
