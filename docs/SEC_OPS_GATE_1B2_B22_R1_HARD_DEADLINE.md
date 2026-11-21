@@ -1,0 +1,13 @@
+# SEC/OPS Gate 1B.2-B.2.2-R1 — independent attempt executor
+
+## Architecture contract (checkpoint 1)
+
+The existing PostgreSQL worker remains the supervisor. It claims jobs, starts a fixed monotonic attempt clock at claim return, heartbeats the renewable 90-second lease, observes user cancellation and shutdown, validates child output, and performs every fenced database transition. The child receives no repository, session, lease token, tenant identity, or database URL. It validates and crawls one URL and returns one result or a stable error code.
+
+The supervisor starts a fresh Python interpreter for each attempt with closed file descriptors, a minimal explicit environment and a new process session. It writes one length-bounded UTF-8 JSON request to stdin, then closes stdin. The request has exactly `version`, `attempt_id`, and `url`. The child writes one length-bounded UTF-8 JSON response to stdout, then exits. A response has exactly `version`, `attempt_id`, `kind`, and either `result` or `code`. The parent requires the acquired attempt ID and validates the result schema. Child error codes are restricted to `unsafe_website` and `crawler_error`; malformed, missing, oversized or late messages become `crawler_error` or `attempt_timeout` according to the parent's clock. No Python object deserialization or raw exception text crosses IPC.
+
+The supervisor's absolute attempt deadline covers process startup, input write, child execution, output read and result validation. At expiry it rejects success, sends SIGTERM to the child's process group, escalates to SIGKILL after a bounded termination window, and reaps the direct child. The parent retains the existing fenced `persist_result` and `persist_failure` calls. The execution deadline does not include PostgreSQL finalization; the 90-second renewable lease and ownership check govern that operation. If finalization cannot safely complete, the lease remains for recovery.
+
+The supported hard-stop boundary is a disposable Linux container using a dedicated child process group. A descendant that deliberately escapes that group, an uninterruptible kernel task, or an unsupported host is outside this guarantee. Process separation is not a security sandbox or network egress policy. The B.2.1 UID, read-only filesystem, capabilities, memory, swap, CPU, PID and FD limits remain unchanged; two active attempts add two child interpreters inside the existing 64-PID and 512-MiB ceilings.
+
+Checkpoint 1 deliberately adds failing tests for a synchronous blocked child and for parent-side IPC correlation. Later checkpoints implement and verify the contract. No acceptance decision is made at this checkpoint.
