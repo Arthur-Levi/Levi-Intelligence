@@ -10,9 +10,9 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.crawler_jobs.postgres import PostgresCrawlerJobRepository
+from app.crawler_jobs.process_executor import ChildTerminationError, ProcessCrawler
 from app.crawler_jobs.timing import CrawlerTiming
 from app.crawler_jobs.worker import NonCooperativeCrawlerError, execute_crawler_job
-from app.services.company_enrichment import verify_and_extract
 
 logger = logging.getLogger("levi.crawler_worker")
 
@@ -54,6 +54,13 @@ async def run() -> None:
             if stopping.is_set():
                 # The committed lease remains durable and will be recovered.
                 return
+            if job.attempt_id is None:
+                raise RuntimeError("claimed crawler job has no attempt identity")
+            crawler = ProcessCrawler(
+                attempt_id=job.attempt_id,
+                deadline=acquired_at + timing.attempt_seconds,
+                termination_seconds=timing.cancellation_seconds,
+            )
             logger.info(
                 "crawler_job_claimed",
                 extra={
@@ -64,7 +71,7 @@ async def run() -> None:
                 },
             )
             await execute_crawler_job(
-                job, repository=repository, crawler=verify_and_extract,
+                job, repository=repository, crawler=crawler,
                 timing=timing, acquired_at=acquired_at,
             )
 
@@ -75,7 +82,7 @@ async def run() -> None:
             if task.cancelled():
                 continue
             error = task.exception()
-            if isinstance(error, NonCooperativeCrawlerError):
+            if isinstance(error, (NonCooperativeCrawlerError, ChildTerminationError)):
                 logger.critical("crawler_child_ignored_cancellation")
                 os._exit(1)
             if error is not None:

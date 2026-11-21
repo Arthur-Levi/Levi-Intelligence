@@ -66,6 +66,7 @@ async def test_worker_drains_and_bounds_active_task(monkeypatch, finish_during_g
     job = CrawlerJobInput(
         job_id=uuid4(), tenant_id=uuid4(), company_id=uuid4(),
         website_url="https://example.com", idempotency_key="request-0001",
+        attempt_id=uuid4(),
     )
     repository = Repository(job)
     started = asyncio.Event()
@@ -96,7 +97,7 @@ async def test_worker_drains_and_bounds_active_task(monkeypatch, finish_during_g
     monkeypatch.setattr(worker, "create_async_engine", lambda *args, **kwargs: Engine())
     monkeypatch.setattr(worker, "async_sessionmaker", lambda *args, **kwargs: None)
     monkeypatch.setattr(worker, "PostgresCrawlerJobRepository", lambda factory: repository)
-    monkeypatch.setattr(worker, "verify_and_extract", crawl)
+    monkeypatch.setattr(worker, "ProcessCrawler", lambda **kwargs: crawl)
     monkeypatch.setattr(worker.CrawlerTiming, "from_env", lambda: CrawlerTiming(
         attempt_seconds=10, cancellation_seconds=0.1,
         shutdown_grace_seconds=0.03, shutdown_cleanup_seconds=0.1, poll_seconds=0.01,
