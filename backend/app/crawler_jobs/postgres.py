@@ -22,6 +22,10 @@ from app.models.prospecting import (
 
 MAX_ATTEMPTS = 5
 LEASE_SECONDS = 90
+GLOBAL_QUEUED_LIMIT = 10_000
+TENANT_QUEUED_LIMIT = 100
+RECOVERY_BATCH = 32
+PENDING_SCAN_DELAY_SECONDS = 1
 
 
 class CrawlerDatabaseError(RuntimeError):
@@ -89,10 +93,21 @@ class PostgresCrawlerJobRepository:
             # Expired attempts are retried with bounded exponential backoff or dead-lettered.
             expired = (CrawlerJob.status == CrawlerJobStatus.RUNNING) & (
                 CrawlerJob.lease_expires_at <= now
+            ) & or_(
+                CrawlerJob.lease_token.is_not(None),
+                CrawlerJob.next_attempt_at <= now,
             )
             rows = await session.scalars(
-                select(CrawlerJob).where(expired).with_for_update(skip_locked=True).limit(32)
+                select(CrawlerJob).where(expired)
+                .order_by(CrawlerJob.next_attempt_at, CrawlerJob.created_at, CrawlerJob.id)
+                .with_for_update(skip_locked=True).limit(RECOVERY_BATCH)
             )
+            queued_global = await session.scalar(
+                select(func.count()).select_from(CrawlerJob).where(
+                    CrawlerJob.status == CrawlerJobStatus.QUEUED
+                )
+            ) or 0
+            queued_by_tenant: dict[UUID, int] = {}
             for row in rows:
                 attempt = await self._attempt(session, row)
                 if attempt is not None and attempt.ended_at is None:
@@ -107,9 +122,9 @@ class PostgresCrawlerJobRepository:
                         outcome="expired",
                     )
                 row.lease_token = None
-                row.lease_expires_at = None
                 if row.cancel_requested_at is not None:
                     row.status = CrawlerJobStatus.CANCELLED
+                    row.lease_expires_at = None
                     row.finished_at = now
                     if attempt is not None:
                         attempt.outcome = "cancelled"
@@ -121,6 +136,7 @@ class PostgresCrawlerJobRepository:
                     )
                 elif row.attempts >= MAX_ATTEMPTS:
                     row.status = CrawlerJobStatus.FAILED
+                    row.lease_expires_at = None
                     row.failure_code = "retry_exhausted"
                     row.finished_at = now
                     if attempt is not None:
@@ -135,8 +151,31 @@ class PostgresCrawlerJobRepository:
                         outcome="retry_exhausted",
                     )
                 else:
+                    if row.tenant_id not in queued_by_tenant:
+                        queued_by_tenant[row.tenant_id] = await session.scalar(
+                            select(func.count()).select_from(CrawlerJob).where(
+                                CrawlerJob.tenant_id == row.tenant_id,
+                                CrawlerJob.status == CrawlerJobStatus.QUEUED,
+                            )
+                        ) or 0
+                    if (row.next_attempt_at is None or row.started_at is None or
+                            row.next_attempt_at <= row.started_at):
+                        row.next_attempt_at = now + timedelta(
+                            seconds=min(60, 2**row.attempts)
+                        )
+                    if (queued_global >= GLOBAL_QUEUED_LIMIT or
+                            queued_by_tenant[row.tenant_id] >= TENANT_QUEUED_LIMIT):
+                        # RUNNING with an expired timestamp and no token is durable,
+                        # unowned recovery pending. Keep its backoff deadline stable.
+                        row.next_attempt_at = max(
+                            row.next_attempt_at,
+                            now + timedelta(seconds=PENDING_SCAN_DELAY_SECONDS),
+                        )
+                        continue
                     row.status = CrawlerJobStatus.QUEUED
-                    row.next_attempt_at = now + timedelta(seconds=min(60, 2**row.attempts))
+                    row.lease_expires_at = None
+                    queued_global += 1
+                    queued_by_tenant[row.tenant_id] += 1
                     emit(
                         "recovery", tenant_id=row.tenant_id, job_id=row.id,
                         attempt_id=attempt.id if attempt else None,

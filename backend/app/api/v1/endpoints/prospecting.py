@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.api.dependencies import TenantContext, require_permission
 from app.core.config import get_settings
@@ -400,6 +401,40 @@ async def create_company_enrichment_job(
     if (queued_tenant or 0) >= 100:
         emit("capacity_rejection", tenant_id=context.tenant.id, outcome="rejected")
         raise HTTPException(status_code=429, detail={"code": "crawler_tenant_queue_full"})
+
+    # An expired attempt with room in its tenant has first use of the next
+    # global slot. The same advisory lock serializes this reservation with
+    # recovery, so a stream of admissions cannot starve pending retries.
+    pending = aliased(CrawlerJob)
+    tenant_queue = aliased(CrawlerJob)
+    pending_filter = (
+            pending.status == CrawlerJobStatus.RUNNING,
+            pending.lease_expires_at <= datetime.now(UTC),
+            pending.cancel_requested_at.is_(None),
+            pending.attempts < 5,
+    )
+    pending_with_room = await session.scalar(
+        select(pending.id).where(
+            *pending_filter,
+            select(func.count()).select_from(tenant_queue).where(
+                tenant_queue.tenant_id == pending.tenant_id,
+                tenant_queue.status == CrawlerJobStatus.QUEUED,
+            ).scalar_subquery() < 100,
+        ).limit(1)
+    )
+    # Reserve only the last global slot, and the last slot in a tenant with
+    # an expired retry. Unrelated tenants can use all other available room.
+    own_pending = None
+    if (queued_tenant or 0) >= 99:
+        own_pending = await session.scalar(
+            select(pending.id).where(
+                *pending_filter,
+                pending.tenant_id == context.tenant.id,
+            ).limit(1)
+        )
+    if ((queued_global or 0) >= 9999 and pending_with_room is not None) or own_pending is not None:
+        emit("capacity_rejection", tenant_id=context.tenant.id, outcome="rejected")
+        raise HTTPException(status_code=429, detail={"code": "crawler_queue_full"})
 
     try:
         session.add(job)
