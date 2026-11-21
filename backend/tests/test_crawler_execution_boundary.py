@@ -330,6 +330,26 @@ async def test_deadline_is_not_reset_between_operations() -> None:
     assert repository.failures[0][1] == "attempt_timeout"
 
 
+@pytest.mark.asyncio
+async def test_redirect_and_retry_like_sequence_shares_original_budget() -> None:
+    repository = MemoryRepository()
+    stages: list[str] = []
+
+    async def staged(_url: str) -> dict[str, object]:
+        for stage in ("dns", "robots", "redirect", "retry", "parse"):
+            stages.append(stage)
+            await asyncio.sleep(0.01)
+        return {"status": "verified", "status_code": 200, "checked_at": datetime.now(UTC)}
+
+    state = await execute_crawler_job(
+        _job_input(), repository=repository, crawler=staged,
+        timing=CrawlerTiming(attempt_seconds=0.025),
+    )
+    assert state == "failed"
+    assert "parse" not in stages
+    assert repository.results == []
+
+
 def test_invalid_timing_is_rejected_at_startup(monkeypatch) -> None:
     monkeypatch.setenv("CRAWLER_ATTEMPT_SECONDS", "nan")
     with pytest.raises(ValueError, match="CRAWLER_ATTEMPT_SECONDS"):
@@ -337,4 +357,8 @@ def test_invalid_timing_is_rejected_at_startup(monkeypatch) -> None:
     monkeypatch.setenv("CRAWLER_ATTEMPT_SECONDS", "60")
     monkeypatch.setenv("CRAWLER_SHUTDOWN_CLEANUP_SECONDS", "1")
     with pytest.raises(ValueError, match="CANCELLATION_SECONDS"):
+        CrawlerTiming.from_env()
+    monkeypatch.setenv("CRAWLER_SHUTDOWN_CLEANUP_SECONDS", "5")
+    monkeypatch.setenv("CRAWLER_SHUTDOWN_GRACE_SECONDS", "21")
+    with pytest.raises(ValueError, match="container stop grace"):
         CrawlerTiming.from_env()

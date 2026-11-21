@@ -58,6 +58,7 @@ services:
       CRAWLER_CANCELLATION_SECONDS: "5"
       CRAWLER_SHUTDOWN_GRACE_SECONDS: "15"
       CRAWLER_SHUTDOWN_CLEANUP_SECONDS: "5"
+      CRAWLER_CONTAINER_STOP_GRACE_SECONDS: ${CRAWLER_CONTAINER_STOP_GRACE_SECONDS:-30}
       APP_ENV: development
     depends_on:
       postgres:
@@ -76,7 +77,7 @@ services:
       nofile:
         soft: 1024
         hard: 1024
-    stop_grace_period: 30s
+    stop_grace_period: ${CRAWLER_CONTAINER_STOP_GRACE_SECONDS:-30}s
     restart: unless-stopped
   redis:
     image: redis:7-alpine

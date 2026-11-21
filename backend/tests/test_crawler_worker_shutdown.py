@@ -34,6 +34,33 @@ class Repository:
 
 
 @pytest.mark.asyncio
+async def test_idle_worker_exits_after_signal_without_new_claims(monkeypatch) -> None:
+    repository = Repository()
+    handlers = {}
+    disposed = asyncio.Event()
+
+    class Engine:
+        async def dispose(self):
+            disposed.set()
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(
+        loop, "add_signal_handler", lambda sig, callback: handlers.update({sig: callback})
+    )
+    monkeypatch.setattr(worker, "create_async_engine", lambda *args, **kwargs: Engine())
+    monkeypatch.setattr(worker, "async_sessionmaker", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker, "PostgresCrawlerJobRepository", lambda factory: repository)
+    monkeypatch.setattr(worker.CrawlerTiming, "from_env", lambda: CrawlerTiming(poll_seconds=0.01))
+    monkeypatch.setenv("CRAWLER_DATABASE_URL", "postgresql+asyncpg://test@localhost/test")
+    task = asyncio.create_task(worker.run())
+    await asyncio.wait_for(repository.claimed.wait(), 1)
+    handlers[signal.SIGTERM]()
+    await asyncio.wait_for(task, 1)
+    assert disposed.is_set()
+    assert repository.claims == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("finish_during_grace", [True, False])
 async def test_worker_drains_and_bounds_active_task(monkeypatch, finish_during_grace) -> None:
     job = CrawlerJobInput(

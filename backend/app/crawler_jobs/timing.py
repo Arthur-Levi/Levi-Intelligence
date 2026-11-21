@@ -22,6 +22,7 @@ class CrawlerTiming:
     cancellation_seconds: float = 5.0
     shutdown_grace_seconds: float = 15.0
     shutdown_cleanup_seconds: float = 5.0
+    container_stop_seconds: float = 30.0
     poll_seconds: float = 1.0
 
     @classmethod
@@ -37,8 +38,14 @@ class CrawlerTiming:
             shutdown_cleanup_seconds=_seconds(
                 "CRAWLER_SHUTDOWN_CLEANUP_SECONDS", 5, minimum=0.1, maximum=30
             ),
+            container_stop_seconds=_seconds(
+                "CRAWLER_CONTAINER_STOP_GRACE_SECONDS", 30, minimum=5, maximum=600
+            ),
             poll_seconds=_seconds("CRAWLER_POLL_SECONDS", 1, minimum=0.2, maximum=10),
         )
         if timing.cancellation_seconds > timing.shutdown_cleanup_seconds:
             raise ValueError("CRAWLER_CANCELLATION_SECONDS exceeds shutdown cleanup budget")
+        if (timing.shutdown_grace_seconds + 2 * timing.shutdown_cleanup_seconds
+                > timing.container_stop_seconds - 5):
+            raise ValueError("crawler shutdown budget exceeds container stop grace minus 5 seconds")
         return timing
