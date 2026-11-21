@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from crawler_faults import fixture_id
@@ -211,3 +212,71 @@ async def test_exact_global_and_tenant_saturation(shared_world):  # noqa: F811
             await session.execute(delete(CrawlerJob).where(CrawlerJob.tenant_id.in_(extra_tenants)))
             await session.execute(delete(Company).where(Company.tenant_id.in_(extra_tenants)))
             await session.execute(delete(Tenant).where(Tenant.id.in_(extra_tenants)))
+
+
+@pytest.mark.asyncio
+async def test_admission_races_multiple_recovery_workers_for_last_tenant_slot(shared_world):  # noqa: F811
+    factory, tenants, users, companies = shared_world
+    repo = PostgresCrawlerJobRepository(factory)
+    job_id = (await add_jobs(factory, tenants[0], users[0], companies[0]))[0]
+    assert await repo.claim_next(tenants[0]) is not None
+    await add_jobs(factory, tenants[0], users[0], companies[0], 99)
+    async with factory.begin() as session:
+        row = await session.get(CrawlerJob, job_id, with_for_update=True)
+        assert row is not None
+        row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    gate = asyncio.Event()
+
+    async def recover():
+        await gate.wait()
+        return await repo.claim_next(tenants[1])
+
+    async def submit():
+        await gate.wait()
+        try:
+            return await admit(factory, tenants[0], users[0], companies[0],
+                               "b4-admission-recovery-race")
+        except HTTPException as exc:
+            return exc
+
+    tasks = [asyncio.create_task(recover()) for _ in range(4)]
+    tasks.append(asyncio.create_task(submit()))
+    gate.set()
+    results = await asyncio.wait_for(asyncio.gather(*tasks), 15)
+    assert isinstance(results[-1], HTTPException) and results[-1].status_code == 429
+    async with factory() as session:
+        row = await session.get(CrawlerJob, job_id)
+        ledger = await session.scalar(select(CrawlerJobAttempt).where(
+            CrawlerJobAttempt.job_id == job_id,
+        ))
+        assert row is not None and row.status == CrawlerJobStatus.QUEUED
+        assert row.attempts == 1 and row.lease_token is None
+        assert ledger is not None and ledger.outcome == "expired"
+        assert await session.scalar(select(func.count()).select_from(CrawlerJob).where(
+            CrawlerJob.tenant_id == tenants[0], CrawlerJob.status == CrawlerJobStatus.QUEUED,
+        )) == 100
+
+
+@pytest.mark.asyncio
+async def test_saturated_tenant_does_not_block_other_tenant_recovery(shared_world):  # noqa: F811
+    factory, tenants, users, companies = shared_world
+    repo = PostgresCrawlerJobRepository(factory)
+    ids = []
+    for index in range(2):
+        ids.append((await add_jobs(factory, tenants[index], users[index], companies[index]))[0])
+        assert await repo.claim_next(tenants[index]) is not None
+    await add_jobs(factory, tenants[0], users[0], companies[0], 100)
+    await add_jobs(factory, tenants[1], users[1], companies[1], 99)
+    async with factory.begin() as session:
+        for job_id in ids:
+            row = await session.get(CrawlerJob, job_id, with_for_update=True)
+            assert row is not None
+            row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await repo.claim_next(uuid4())
+    async with factory() as session:
+        rows = [await session.get(CrawlerJob, job_id) for job_id in ids]
+        assert rows[0] is not None and rows[0].status == CrawlerJobStatus.RUNNING
+        assert rows[1] is not None and rows[1].status == CrawlerJobStatus.QUEUED
+        assert await session.scalar(select(func.count()).select_from(CrawlerJob).where(
+            CrawlerJob.tenant_id == tenants[1], CrawlerJob.status == CrawlerJobStatus.QUEUED,
+        )) == 100
