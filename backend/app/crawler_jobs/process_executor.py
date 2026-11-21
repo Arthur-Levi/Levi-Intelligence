@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -32,11 +33,23 @@ class ChildTerminationError(RuntimeError):
 
 
 def _decode_response(data: bytes, attempt_id: UUID) -> dict[str, object]:
+    if not data.endswith(b"\n") or data.count(b"\n") != 1:
+        raise InvalidResponseError("incomplete child response")
+
+    def reject_constant(_value: str) -> None:
+        raise ValueError("non-finite JSON value")
+
+    def unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        if len({key for key, _ in pairs}) != len(pairs):
+            raise ValueError("duplicate JSON field")
+        return dict(pairs)
+
     try:
-        message = json.loads(data)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        message = json.loads(data, parse_constant=reject_constant, object_pairs_hook=unique_pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise InvalidResponseError("invalid child response") from exc
-    if not isinstance(message, dict) or message.get("version") != PROTOCOL_VERSION:
+    if (not isinstance(message, dict) or type(message.get("version")) is not int
+            or message["version"] != PROTOCOL_VERSION):
         raise InvalidResponseError("invalid child protocol version")
     if message.get("attempt_id") != str(attempt_id):
         raise InvalidResponseError("child response attempt mismatch")
@@ -90,21 +103,29 @@ class ProcessCrawler:
         except ProcessLookupError:
             pass
 
-    async def _terminate(self, process: asyncio.subprocess.Process) -> None:
+    @staticmethod
+    def _exit_status(pid: int) -> os.waitid_result | None:
+        return os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+
+    async def _terminate(self, process: subprocess.Popen[bytes]) -> None:
+        # Keep the direct child unreaped until after group signals. Its reserved
+        # PID then prevents this process group ID from being reused.
         self._signal_group(process.pid, signal.SIGTERM)
         term_grace = min(1.0, self.termination_seconds / 2)
-        try:
-            await asyncio.wait_for(process.wait(), timeout=term_grace)
-        except TimeoutError:
-            pass
+        grace_end = time.monotonic() + term_grace
+        while self._exit_status(process.pid) is None and time.monotonic() < grace_end:
+            await asyncio.sleep(min(0.01, max(0, grace_end - time.monotonic())))
         self._signal_group(process.pid, signal.SIGKILL)
-        if process.returncode is None:
-            try:
-                await asyncio.wait_for(
-                    process.wait(), timeout=max(0.1, self.termination_seconds - term_grace)
-                )
-            except TimeoutError as exc:
-                raise ChildTerminationError("child was not reaped") from exc
+        kill_end = time.monotonic() + max(0.1, self.termination_seconds - term_grace)
+        while self._exit_status(process.pid) is None and time.monotonic() < kill_end:
+            await asyncio.sleep(min(0.01, max(0, kill_end - time.monotonic())))
+        if self._exit_status(process.pid) is None:
+            raise ChildTerminationError("child was not reaped")
+        process.wait(timeout=0)
+        if process.stdin is not None:
+            process.stdin.close()
+        if process.stdout is not None:
+            process.stdout.close()
 
     async def __call__(self, url: str) -> dict[str, object]:
         request = {
@@ -120,45 +141,60 @@ class ProcessCrawler:
             [sys.executable, str(self.executor_path)] if self.executor_path is not None
             else [sys.executable, "-m", "app.crawler_jobs.executor"]
         )
-        process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-                env={
-                    "PATH": os.defpath,
-                    "LANG": "C.UTF-8",
-                    "PYTHONDONTWRITEBYTECODE": "1",
-                    "PYTHONUNBUFFERED": "1",
-                },
-                close_fds=True,
-                start_new_session=True,
-            ),
-            timeout=self._remaining(),
+        # Popen returns an owned handle before the first await. Cancellation
+        # cannot land between OS spawn and process ownership.
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={
+                "PATH": os.defpath,
+                "LANG": "C.UTF-8",
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONUNBUFFERED": "1",
+            },
+            close_fds=True,
+            start_new_session=True,
         )
         self.child_pid = process.pid
         try:
             assert process.stdin is not None and process.stdout is not None
-            process.stdin.write(payload)
-            await asyncio.wait_for(process.stdin.drain(), timeout=self._remaining())
+            os.set_blocking(process.stdin.fileno(), False)
+            os.set_blocking(process.stdout.fileno(), False)
+            sent = 0
+            while sent < len(payload):
+                remaining = self._remaining()
+                try:
+                    sent += os.write(process.stdin.fileno(), payload[sent:])
+                except BlockingIOError:
+                    await asyncio.sleep(min(0.01, remaining))
             process.stdin.close()
             response = bytearray()
             while True:
-                chunk = await asyncio.wait_for(
-                    process.stdout.read(min(1024, MAX_OUTPUT_BYTES + 1 - len(response))),
-                    timeout=self._remaining(),
-                )
+                remaining = self._remaining()
+                try:
+                    chunk = os.read(
+                        process.stdout.fileno(), min(1024, MAX_OUTPUT_BYTES + 1 - len(response))
+                    )
+                except BlockingIOError:
+                    await asyncio.sleep(min(0.01, remaining))
+                    continue
                 if not chunk:
                     break
                 response.extend(chunk)
                 if len(response) > MAX_OUTPUT_BYTES:
                     raise InvalidResponseError("child response exceeds output limit")
-            await asyncio.wait_for(process.wait(), timeout=self._remaining())
-            if process.returncode != 0:
+            status = self._exit_status(process.pid)
+            while status is None:
+                await asyncio.sleep(min(0.01, self._remaining()))
+                status = self._exit_status(process.pid)
+            if status.si_code != os.CLD_EXITED or status.si_status != 0:
                 raise RuntimeError("crawler child exited without success")
             self._remaining()
-            return _decode_response(bytes(response), self.attempt_id)
+            result = _decode_response(bytes(response), self.attempt_id)
+            self._remaining()
+            return result
         except TimeoutError as exc:
             raise AttemptTimedOut from exc
         finally:

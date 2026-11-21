@@ -15,10 +15,19 @@ def main() -> int:
     if len(raw) > MAX_INPUT_BYTES or not raw.endswith(b"\n"):
         return 2
     try:
-        request = json.loads(raw)
+        def unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            if len({key for key, _ in pairs}) != len(pairs):
+                raise ValueError("duplicate request field")
+            return dict(pairs)
+
+        def reject_constant(_value: str) -> None:
+            raise ValueError("non-finite request value")
+
+        request = json.loads(raw, object_pairs_hook=unique_pairs, parse_constant=reject_constant)
         if (
             not isinstance(request, dict)
             or set(request) != {"version", "attempt_id", "url"}
+            or type(request["version"]) is not int
             or request["version"] != PROTOCOL_VERSION
             or not isinstance(request["url"], str)
             or len(request["url"]) > 500
