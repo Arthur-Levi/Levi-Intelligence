@@ -318,6 +318,7 @@ class PostgresCrawlerJobRepository:
             "invalid_job",
             "unsafe_website",
             "crawler_error",
+            "attempt_timeout",
             "retry_exhausted",
         }:
             failure_code = "crawler_error"

@@ -17,6 +17,7 @@ from app.crawler_jobs.contracts import (
     build_crawler_job,
     validate_job_input,
 )
+from app.crawler_jobs.timing import CrawlerTiming
 from app.crawler_jobs.worker import execute_crawler_job, execute_next_crawler_job
 from app.models.prospecting import CrawlerJob, CrawlerJobStatus
 from app.services.company_enrichment import UnsafeWebsiteError
@@ -285,4 +286,55 @@ async def test_worker_honors_cancellation_before_and_during_execution() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert active.cancellations == [job]
+    assert active.cancellations == []
+
+
+@pytest.mark.asyncio
+async def test_absolute_attempt_deadline_cancels_child_and_rejects_partial_result() -> None:
+    repository = MemoryRepository()
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def slow(_url: str) -> dict[str, object]:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    task = asyncio.create_task(execute_crawler_job(
+        _job_input(), repository=repository, crawler=slow,
+        timing=CrawlerTiming(attempt_seconds=0.02),
+    ))
+    await asyncio.wait_for(started.wait(), 1)
+    assert await asyncio.wait_for(task, 1) == "failed"
+    assert cancelled.is_set()
+    assert [code for _, code in repository.failures] == ["attempt_timeout"]
+    assert repository.results == []
+
+
+@pytest.mark.asyncio
+async def test_deadline_is_not_reset_between_operations() -> None:
+    repository = MemoryRepository()
+
+    async def slow(_url: str) -> dict[str, object]:
+        await asyncio.sleep(0.015)
+        return {"status": "verified", "status_code": 200, "checked_at": datetime.now(UTC)}
+
+    state = await execute_crawler_job(
+        _job_input(), repository=repository, crawler=slow,
+        timing=CrawlerTiming(attempt_seconds=0.01),
+    )
+    assert state == "failed"
+    assert repository.results == []
+    assert repository.failures[0][1] == "attempt_timeout"
+
+
+def test_invalid_timing_is_rejected_at_startup(monkeypatch) -> None:
+    monkeypatch.setenv("CRAWLER_ATTEMPT_SECONDS", "nan")
+    with pytest.raises(ValueError, match="CRAWLER_ATTEMPT_SECONDS"):
+        CrawlerTiming.from_env()
+    monkeypatch.setenv("CRAWLER_ATTEMPT_SECONDS", "60")
+    monkeypatch.setenv("CRAWLER_SHUTDOWN_CLEANUP_SECONDS", "1")
+    with pytest.raises(ValueError, match="CANCELLATION_SECONDS"):
+        CrawlerTiming.from_env()
