@@ -2,6 +2,8 @@
 
 import asyncio
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -67,7 +69,8 @@ async def test_noncooperative_child_is_forcibly_terminated(mode: str) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["malformed", "partial", "oversized", "duplicate",
-                                      "bad-version", "bad-schema", "extra"])
+                                      "bad-version", "bad-schema", "extra", "unknown-code",
+                                      "nan"])
 async def test_invalid_ipc_is_rejected(mode: str) -> None:
     with pytest.raises(InvalidResponseError):
         await asyncio.wait_for(crawler()(f"https://example.test/{mode}"), 3)
@@ -130,3 +133,36 @@ async def test_descendant_in_same_process_group_is_killed(tmp_path: Path) -> Non
     descendant = int(marker.read_text())
     assert process.child_pid is not None and not_running(process.child_pid)
     assert not_running(descendant)
+
+
+@pytest.mark.asyncio
+async def test_successful_child_cannot_leave_live_descendant(tmp_path: Path) -> None:
+    marker = tmp_path / "descendant-success.pid"
+    process = crawler()
+    result = await asyncio.wait_for(
+        process(f"https://example.test/spawn-then-result?marker={marker}"), 3
+    )
+    assert result["status"] == "verified"
+    assert marker.exists() and not_running(int(marker.read_text()))
+
+
+@pytest.mark.asyncio
+async def test_maximum_ascii_url_and_bounded_result_fit_protocol() -> None:
+    url = "https://example.test/" + "a" * (500 - len("https://example.test/"))
+    assert len(url) == 500
+    assert (await asyncio.wait_for(crawler()(url), 3))["status"] == "verified"
+    result = await asyncio.wait_for(crawler()("https://example.test/max-result"), 3)
+    assert len(result["emails"]) == 10 and len(result["phones"]) == 10
+
+
+@pytest.mark.parametrize("payload", [
+    b'{"version":true,"attempt_id":"x","url":"https://example.test"}\n',
+    b'{"version":1,"version":1,"attempt_id":"x","url":"https://example.test"}\n',
+    b'{"version":1,"attempt_id":"x","url":"https://example.test","lease":"x"}\n',
+])
+def test_real_child_rejects_invalid_request_without_crawling(payload: bytes) -> None:
+    child = subprocess.run(
+        [sys.executable, "-m", "app.crawler_jobs.executor"],
+        input=payload, capture_output=True, timeout=3, check=False,
+    )
+    assert child.returncode == 2 and child.stdout == b""

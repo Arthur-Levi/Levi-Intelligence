@@ -107,6 +107,21 @@ class ProcessCrawler:
     def _exit_status(pid: int) -> os.waitid_result | None:
         return os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
 
+    @staticmethod
+    def _group_has_live_members(pgid: int) -> bool:
+        # The supported runtime is Linux. Zombies cannot execute and are
+        # reaped by their parent or the container init after termination.
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                fields = (entry / "stat").read_text().rpartition(")")[2].split()
+            except (FileNotFoundError, PermissionError, ProcessLookupError):
+                continue
+            if len(fields) >= 3 and int(fields[2]) == pgid and fields[0] != "Z":
+                return True
+        return False
+
     async def _terminate(self, process: subprocess.Popen[bytes]) -> None:
         # Keep the direct child unreaped until after group signals. Its reserved
         # PID then prevents this process group ID from being reused.
@@ -117,10 +132,11 @@ class ProcessCrawler:
             await asyncio.sleep(min(0.01, max(0, grace_end - time.monotonic())))
         self._signal_group(process.pid, signal.SIGKILL)
         kill_end = time.monotonic() + max(0.1, self.termination_seconds - term_grace)
-        while self._exit_status(process.pid) is None and time.monotonic() < kill_end:
+        while (self._exit_status(process.pid) is None
+               or self._group_has_live_members(process.pid)) and time.monotonic() < kill_end:
             await asyncio.sleep(min(0.01, max(0, kill_end - time.monotonic())))
-        if self._exit_status(process.pid) is None:
-            raise ChildTerminationError("child was not reaped")
+        if self._exit_status(process.pid) is None or self._group_has_live_members(process.pid):
+            raise ChildTerminationError("child group was not stopped and reaped")
         process.wait(timeout=0)
         if process.stdin is not None:
             process.stdin.close()

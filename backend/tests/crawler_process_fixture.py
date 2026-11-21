@@ -22,13 +22,17 @@ if mode == "ignore-term":
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     while True:
         time.sleep(1)
-if mode == "spawn":
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+if mode in {"spawn", "spawn-then-result"}:
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
     marker = url.split("?marker=", 1)[1]
     with open(marker, "w") as output:
         output.write(str(child.pid))
-    while True:
-        time.sleep(1)
+    if mode == "spawn":
+        while True:
+            time.sleep(1)
 if mode == "crash":
     raise RuntimeError("synthetic crash with sensitive text")
 if mode == "late":
@@ -71,8 +75,20 @@ response = {
         "checked_at": datetime.now(UTC).isoformat(),
     },
 }
+if mode == "max-result":
+    response["result"]["emails"] = [f"user{i}@example.test" for i in range(10)]
+    response["result"]["phones"] = [f"+1555000{i:04d}" for i in range(10)]
 if mode == "extra":
     response["lease_token"] = str(uuid4())
+if mode == "unknown-code":
+    response = {
+        "version": 1, "attempt_id": request["attempt_id"],
+        "kind": "error", "code": "arbitrary_child_code",
+    }
+if mode == "nan":
+    data = json.dumps(response).replace('"status_code": 200', '"status_code": NaN')
+    sys.stdout.write(data + "\n")
+    raise SystemExit(0)
 sys.stdout.write(json.dumps(response) + "\n")
 sys.stdout.flush()
 if mode == "nonzero-success":
