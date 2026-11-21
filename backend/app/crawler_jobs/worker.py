@@ -93,7 +93,7 @@ async def execute_crawler_job(
                     raise NonCooperativeCrawlerError(
                         "crawler child did not stop after cancellation"
                     ) from exc
-                await asyncio.gather(crawl_task, return_exceptions=True)
+            await asyncio.gather(crawl_task, return_exceptions=True)
             raise
 
     try:

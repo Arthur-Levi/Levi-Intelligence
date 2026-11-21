@@ -3,6 +3,9 @@
 import math
 import os
 from dataclasses import dataclass
+from uuid import UUID
+
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 
 def _integer(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -91,3 +94,24 @@ class CrawlerDatabaseResources:
                 int(self.idle_transaction_timeout_seconds * 1000)
             ),
         }
+
+
+def create_crawler_engine(
+    database_url: str, resources: CrawlerDatabaseResources, worker_id: UUID
+) -> AsyncEngine:
+    """The sole database engine used by a crawler supervisor process."""
+    return create_async_engine(
+        database_url,
+        pool_pre_ping=True,
+        pool_size=resources.pool_size,
+        max_overflow=resources.max_overflow,
+        pool_timeout=resources.pool_timeout_seconds,
+        connect_args={
+            "timeout": resources.connect_timeout_seconds,
+            "command_timeout": resources.command_timeout_seconds,
+            "server_settings": {
+                **resources.server_settings,
+                "application_name": f"levi_crawler_{worker_id.hex[:12]}",
+            },
+        },
+    )

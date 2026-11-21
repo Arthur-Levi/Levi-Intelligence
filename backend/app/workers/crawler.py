@@ -7,15 +7,16 @@ import signal
 import time
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.crawler_jobs.db_resources import CrawlerDatabaseResources
-from app.crawler_jobs.postgres import PostgresCrawlerJobRepository
+from app.crawler_jobs.db_resources import CrawlerDatabaseResources, create_crawler_engine
+from app.crawler_jobs.postgres import CrawlerDatabaseError, PostgresCrawlerJobRepository
 from app.crawler_jobs.process_executor import ChildTerminationError, ProcessCrawler
 from app.crawler_jobs.timing import CrawlerTiming
 from app.crawler_jobs.worker import NonCooperativeCrawlerError, execute_crawler_job
 
 logger = logging.getLogger("levi.crawler_worker")
+MAX_DATABASE_BACKOFF_SECONDS = 10
 
 
 async def run() -> None:
@@ -25,23 +26,12 @@ async def run() -> None:
     if not database_url:
         raise RuntimeError("CRAWLER_DATABASE_URL is required")
     concurrency = database_resources.concurrency
-    engine = create_async_engine(
-        database_url,
-        pool_pre_ping=True,
-        pool_size=database_resources.pool_size,
-        max_overflow=database_resources.max_overflow,
-        pool_timeout=database_resources.pool_timeout_seconds,
-        connect_args={
-            "timeout": database_resources.connect_timeout_seconds,
-            "command_timeout": database_resources.command_timeout_seconds,
-            "server_settings": database_resources.server_settings,
-        },
-    )
+    worker_id = uuid4()
+    engine = create_crawler_engine(database_url, database_resources, worker_id)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     repository = PostgresCrawlerJobRepository(
         factory, transaction_timeout_seconds=database_resources.transaction_timeout_seconds
     )
-    worker_id = uuid4()
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     shutdown_started: float | None = None
@@ -57,6 +47,8 @@ async def run() -> None:
         loop.add_signal_handler(sig, begin_shutdown)
     semaphore = asyncio.Semaphore(concurrency)
     active: set[asyncio.Task[None]] = set()
+    database_failure_count = 0
+    next_claim_at = 0.0
 
     async def work() -> None:
         async with semaphore:
@@ -91,6 +83,7 @@ async def run() -> None:
             )
 
     def check_finished() -> None:
+        nonlocal database_failure_count, next_claim_at
         finished = {task for task in active if task.done()}
         active.difference_update(finished)
         for task in finished:
@@ -100,6 +93,12 @@ async def run() -> None:
             if isinstance(error, (NonCooperativeCrawlerError, ChildTerminationError)):
                 logger.critical("crawler_child_ignored_cancellation")
                 os._exit(1)
+            if isinstance(error, CrawlerDatabaseError):
+                database_failure_count = min(5, database_failure_count + 1)
+                delay = min(MAX_DATABASE_BACKOFF_SECONDS, 2 ** (database_failure_count - 1))
+                next_claim_at = max(next_claim_at, time.monotonic() + delay)
+            elif error is None:
+                database_failure_count = 0
             if error is not None:
                 # Exception text can contain a URL or response data.
                 logger.error("crawler_worker_task_failed")
@@ -115,7 +114,7 @@ async def run() -> None:
     try:
         while not stopping.is_set():
             check_finished()
-            if len(active) < concurrency:
+            if len(active) < concurrency and time.monotonic() >= next_claim_at:
                 task = asyncio.create_task(work())
                 active.add(task)
             stop_waiter = asyncio.create_task(stopping.wait())

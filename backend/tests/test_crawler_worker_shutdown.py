@@ -47,7 +47,7 @@ async def test_idle_worker_exits_after_signal_without_new_claims(monkeypatch) ->
     monkeypatch.setattr(
         loop, "add_signal_handler", lambda sig, callback: handlers.update({sig: callback})
     )
-    monkeypatch.setattr(worker, "create_async_engine", lambda *args, **kwargs: Engine())
+    monkeypatch.setattr(worker, "create_crawler_engine", lambda *args, **kwargs: Engine())
     monkeypatch.setattr(worker, "async_sessionmaker", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         worker, "PostgresCrawlerJobRepository", lambda *args, **kwargs: repository
@@ -96,7 +96,7 @@ async def test_worker_drains_and_bounds_active_task(monkeypatch, finish_during_g
     monkeypatch.setattr(
         loop, "add_signal_handler", lambda sig, callback: handlers.update({sig: callback})
     )
-    monkeypatch.setattr(worker, "create_async_engine", lambda *args, **kwargs: Engine())
+    monkeypatch.setattr(worker, "create_crawler_engine", lambda *args, **kwargs: Engine())
     monkeypatch.setattr(worker, "async_sessionmaker", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         worker, "PostgresCrawlerJobRepository", lambda *args, **kwargs: repository
