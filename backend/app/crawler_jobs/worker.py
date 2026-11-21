@@ -7,6 +7,7 @@ from typing import Protocol
 from uuid import UUID
 
 from app.crawler_jobs.contracts import CrawlerJobInput, CrawlerJobResult, validate_job_input
+from app.crawler_jobs.postgres import CrawlerDatabaseError
 from app.crawler_jobs.process_executor import ChildTerminationError
 from app.crawler_jobs.timing import CrawlerTiming
 from app.services.company_enrichment import UnsafeWebsiteError
@@ -111,6 +112,10 @@ async def execute_crawler_job(
         raise
     except ChildTerminationError:
         # A child that has not been reaped cannot be finalized safely.
+        raise
+    except CrawlerDatabaseError:
+        # Heartbeat and cancellation-read uncertainty is not a crawl failure.
+        # Preserve the lease for fenced recovery instead of manufacturing a result.
         raise
     except UnsafeWebsiteError:
         await repository.persist_failure(job, "unsafe_website")

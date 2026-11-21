@@ -49,7 +49,9 @@ async def test_idle_worker_exits_after_signal_without_new_claims(monkeypatch) ->
     )
     monkeypatch.setattr(worker, "create_async_engine", lambda *args, **kwargs: Engine())
     monkeypatch.setattr(worker, "async_sessionmaker", lambda *args, **kwargs: None)
-    monkeypatch.setattr(worker, "PostgresCrawlerJobRepository", lambda factory: repository)
+    monkeypatch.setattr(
+        worker, "PostgresCrawlerJobRepository", lambda *args, **kwargs: repository
+    )
     monkeypatch.setattr(worker.CrawlerTiming, "from_env", lambda: CrawlerTiming(poll_seconds=0.01))
     monkeypatch.setenv("CRAWLER_DATABASE_URL", "postgresql+asyncpg://test@localhost/test")
     task = asyncio.create_task(worker.run())
@@ -96,7 +98,9 @@ async def test_worker_drains_and_bounds_active_task(monkeypatch, finish_during_g
     )
     monkeypatch.setattr(worker, "create_async_engine", lambda *args, **kwargs: Engine())
     monkeypatch.setattr(worker, "async_sessionmaker", lambda *args, **kwargs: None)
-    monkeypatch.setattr(worker, "PostgresCrawlerJobRepository", lambda factory: repository)
+    monkeypatch.setattr(
+        worker, "PostgresCrawlerJobRepository", lambda *args, **kwargs: repository
+    )
     monkeypatch.setattr(worker, "ProcessCrawler", lambda **kwargs: crawl)
     monkeypatch.setattr(worker.CrawlerTiming, "from_env", lambda: CrawlerTiming(
         attempt_seconds=10, cancellation_seconds=0.1,

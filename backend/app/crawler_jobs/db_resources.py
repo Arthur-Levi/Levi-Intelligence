@@ -34,6 +34,11 @@ class CrawlerDatabaseResources:
     max_overflow: int = 0
     pool_timeout_seconds: float = 2.0
     connect_timeout_seconds: float = 3.0
+    lock_timeout_seconds: float = 1.0
+    statement_timeout_seconds: float = 5.0
+    idle_transaction_timeout_seconds: float = 5.0
+    command_timeout_seconds: float = 6.0
+    transaction_timeout_seconds: float = 15.0
 
     @classmethod
     def from_env(cls) -> "CrawlerDatabaseResources":
@@ -50,7 +55,39 @@ class CrawlerDatabaseResources:
             connect_timeout_seconds=_seconds(
                 "CRAWLER_DB_CONNECT_TIMEOUT_SECONDS", 3, minimum=0.1, maximum=5
             ),
+            lock_timeout_seconds=_seconds(
+                "CRAWLER_DB_LOCK_TIMEOUT_SECONDS", 1, minimum=0.1, maximum=10
+            ),
+            statement_timeout_seconds=_seconds(
+                "CRAWLER_DB_STATEMENT_TIMEOUT_SECONDS", 5, minimum=0.2, maximum=30
+            ),
+            idle_transaction_timeout_seconds=_seconds(
+                "CRAWLER_DB_IDLE_TRANSACTION_TIMEOUT_SECONDS", 5, minimum=0.2, maximum=30
+            ),
+            command_timeout_seconds=_seconds(
+                "CRAWLER_DB_COMMAND_TIMEOUT_SECONDS", 6, minimum=0.2, maximum=30
+            ),
+            transaction_timeout_seconds=_seconds(
+                "CRAWLER_DB_TRANSACTION_TIMEOUT_SECONDS", 15, minimum=1, maximum=60
+            ),
         )
         if resources.pool_size < resources.concurrency:
             raise ValueError("CRAWLER_DB_POOL_SIZE must cover worker concurrency")
+        if not (
+            resources.lock_timeout_seconds < resources.statement_timeout_seconds
+            < resources.command_timeout_seconds < resources.transaction_timeout_seconds
+        ):
+            raise ValueError("crawler database timeout ordering is inconsistent")
+        if resources.idle_transaction_timeout_seconds > resources.transaction_timeout_seconds:
+            raise ValueError("idle transaction timeout exceeds transaction budget")
         return resources
+
+    @property
+    def server_settings(self) -> dict[str, str]:
+        return {
+            "statement_timeout": str(int(self.statement_timeout_seconds * 1000)),
+            "lock_timeout": str(int(self.lock_timeout_seconds * 1000)),
+            "idle_in_transaction_session_timeout": str(
+                int(self.idle_transaction_timeout_seconds * 1000)
+            ),
+        }

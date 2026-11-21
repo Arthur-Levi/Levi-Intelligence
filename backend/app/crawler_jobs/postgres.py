@@ -1,9 +1,13 @@
 """Narrow PostgreSQL adapter for the crawler job lifecycle."""
 
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.crawler_jobs.contracts import CrawlerJobInput, CrawlerJobResult
@@ -20,11 +24,36 @@ MAX_ATTEMPTS = 5
 LEASE_SECONDS = 90
 
 
+class CrawlerDatabaseError(RuntimeError):
+    """Sanitized database failure; attempt ownership must be reconciled."""
+
+
 class PostgresCrawlerJobRepository:
     """Exposes only crawler lifecycle operations; each write has its own transaction."""
 
-    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self, factory: async_sessionmaker[AsyncSession], *, transaction_timeout_seconds: float = 15
+    ) -> None:
         self._factory = factory
+        self._transaction_timeout_seconds = transaction_timeout_seconds
+
+    @asynccontextmanager
+    async def _transaction(self) -> AsyncIterator[AsyncSession]:
+        try:
+            async with asyncio.timeout(self._transaction_timeout_seconds):
+                async with self._factory() as session, session.begin():
+                    yield session
+        except (SQLAlchemyError, TimeoutError) as exc:
+            raise CrawlerDatabaseError("crawler database transaction failed") from exc
+
+    @asynccontextmanager
+    async def _read_session(self) -> AsyncIterator[AsyncSession]:
+        try:
+            async with asyncio.timeout(self._transaction_timeout_seconds):
+                async with self._factory() as session:
+                    yield session
+        except (SQLAlchemyError, TimeoutError) as exc:
+            raise CrawlerDatabaseError("crawler database read failed") from exc
 
     @staticmethod
     def _payload(
@@ -54,7 +83,7 @@ class PostgresCrawlerJobRepository:
     async def claim_next(
         self, tenant_id: UUID | None = None, *, worker_id: UUID | None = None
     ) -> CrawlerJobInput | None:
-        async with self._factory() as session, session.begin():
+        async with self._transaction() as session:
             await session.execute(text("SELECT pg_advisory_xact_lock(681204117)"))
             now = datetime.now(UTC)
             # Expired attempts are retried with bounded exponential backoff or dead-lettered.
@@ -190,7 +219,7 @@ class PostgresCrawlerJobRepository:
             return self._payload(selected, token, attempt.id, identity)
 
     async def heartbeat(self, job: CrawlerJobInput) -> bool:
-        async with self._factory() as session, session.begin():
+        async with self._transaction() as session:
             row = await session.scalar(
                 select(CrawlerJob)
                 .where(
@@ -223,7 +252,7 @@ class PostgresCrawlerJobRepository:
             return True
 
     async def cancellation_requested(self, job_id: UUID, tenant_id: UUID) -> bool:
-        async with self._factory() as session:
+        async with self._read_session() as session:
             return bool(
                 await session.scalar(
                     select(CrawlerJob.cancel_requested_at.is_not(None)).where(
@@ -253,7 +282,7 @@ class PostgresCrawlerJobRepository:
 
     async def persist_result(self, job: CrawlerJobInput, result: CrawlerJobResult) -> None:
         validated = CrawlerJobResult.model_validate(result)
-        async with self._factory() as session, session.begin():
+        async with self._transaction() as session:
             row = await self._owned(session, job)
             if row is None or row.cancel_requested_at is not None:
                 raise RuntimeError("crawler lease is no longer owned")
@@ -322,7 +351,7 @@ class PostgresCrawlerJobRepository:
             "retry_exhausted",
         }:
             failure_code = "crawler_error"
-        async with self._factory() as session, session.begin():
+        async with self._transaction() as session:
             row = await self._owned(session, job)
             if row is None or row.cancel_requested_at is not None:
                 raise RuntimeError("crawler lease is no longer owned")
@@ -346,7 +375,7 @@ class PostgresCrawlerJobRepository:
                 )
 
     async def persist_cancellation(self, job: CrawlerJobInput) -> None:
-        async with self._factory() as session, session.begin():
+        async with self._transaction() as session:
             row = await self._owned(session, job)
             if row is None:
                 return

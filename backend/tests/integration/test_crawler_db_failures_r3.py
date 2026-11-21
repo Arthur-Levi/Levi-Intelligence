@@ -9,13 +9,11 @@ import pytest
 from crawler_faults import FaultPlan, FaultPoint, FaultRepository, InjectedFault
 from sqlalchemy import event, func, select, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import DBAPIError
-from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from test_postgres_crawler_lifecycle import add_jobs, result
 from test_postgres_crawler_lifecycle import world as shared_world  # noqa: F401
 
-from app.crawler_jobs.postgres import PostgresCrawlerJobRepository
+from app.crawler_jobs.postgres import CrawlerDatabaseError, PostgresCrawlerJobRepository
 from app.models.prospecting import CrawlerJob, CrawlerJobAttempt, CrawlerJobStatus, SourceRecord
 
 pytestmark = pytest.mark.integration
@@ -34,7 +32,7 @@ async def interrupt_at(factory, predicate: Callable[[str], bool], operation):
 
     event.listen(engine.sync_engine, "before_cursor_execute", terminate)
     try:
-        with pytest.raises(DBAPIError):
+        with pytest.raises(CrawlerDatabaseError):
             await asyncio.wait_for(operation(), 5)
         assert fired
     finally:
@@ -122,7 +120,7 @@ async def test_bounded_pool_checkout_timeout_then_recovery(shared_world):  # noq
         async with tiny_factory() as holder:
             await holder.execute(text("SELECT 1"))
             repo = PostgresCrawlerJobRepository(tiny_factory)
-            with pytest.raises(PoolTimeout):
+            with pytest.raises(CrawlerDatabaseError):
                 await asyncio.wait_for(repo.claim_next(tenants[0]), 2)
         assert await asyncio.wait_for(repo.claim_next(tenants[0]), 5) is not None
     finally:
@@ -143,7 +141,7 @@ async def test_database_temporarily_unavailable_then_restored(shared_world):  # 
             await control.execute(text(
                 "ALTER DATABASE levi_gate_1b1_ci WITH ALLOW_CONNECTIONS false"))
         try:
-            with pytest.raises((OSError, DBAPIError)):
+            with pytest.raises(CrawlerDatabaseError):
                 await asyncio.wait_for(
                     PostgresCrawlerJobRepository(async_sessionmaker(fresh)).claim_next(), 3)
         finally:

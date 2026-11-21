@@ -31,10 +31,16 @@ async def run() -> None:
         pool_size=database_resources.pool_size,
         max_overflow=database_resources.max_overflow,
         pool_timeout=database_resources.pool_timeout_seconds,
-        connect_args={"timeout": database_resources.connect_timeout_seconds},
+        connect_args={
+            "timeout": database_resources.connect_timeout_seconds,
+            "command_timeout": database_resources.command_timeout_seconds,
+            "server_settings": database_resources.server_settings,
+        },
     )
     factory = async_sessionmaker(engine, expire_on_commit=False)
-    repository = PostgresCrawlerJobRepository(factory)
+    repository = PostgresCrawlerJobRepository(
+        factory, transaction_timeout_seconds=database_resources.transaction_timeout_seconds
+    )
     worker_id = uuid4()
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
