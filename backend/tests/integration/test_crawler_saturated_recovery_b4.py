@@ -1,6 +1,7 @@
 """Capacity and ownership checks for expired crawler leases."""
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -12,7 +13,7 @@ from test_crawler_admission_r3 import admit
 from test_postgres_crawler_lifecycle import add_jobs, context, request, result
 from test_postgres_crawler_lifecycle import world as shared_world  # noqa: F401
 
-from app.api.v1.endpoints.prospecting import cancel_crawler_job
+from app.api.v1.endpoints.prospecting import cancel_crawler_job, get_crawler_job
 from app.crawler_jobs.postgres import PostgresCrawlerJobRepository
 from app.models.identity import Tenant
 from app.models.prospecting import Company, CrawlerJob, CrawlerJobAttempt, CrawlerJobStatus
@@ -65,6 +66,10 @@ async def test_pending_ledger_progress_fencing_and_priority(shared_world):  # no
         assert pending.attempts == 1
         assert ledger is not None and ledger.outcome == "expired" and ledger.ended_at is not None
         first_end = ledger.ended_at
+    ctx = await context(factory, tenants[0], users[0])
+    async with factory() as session:
+        public = await get_crawler_job(expired_id, ctx, session)
+    assert public.status == CrawlerJobStatus.RUNNING.value
 
     # Once the tenant has room, admission yields the slot to recovery.
     async with factory.begin() as session:
@@ -181,9 +186,12 @@ async def test_exact_global_and_tenant_saturation(shared_world):  # noqa: F811
             row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
         await repo.claim_next(tenants[1])
         async with factory() as session:
-            assert await session.scalar(select(func.count()).select_from(CrawlerJob).where(
+            started = time.perf_counter()
+            global_count = await session.scalar(select(func.count()).select_from(CrawlerJob).where(
                 CrawlerJob.status == CrawlerJobStatus.QUEUED,
-            )) == 10_000
+            ))
+            print(f"B4 global queued count at 10000: {time.perf_counter() - started:.3f}s")
+            assert global_count == 10_000
             assert (await session.get(CrawlerJob, expired_id)).status == CrawlerJobStatus.RUNNING
         # Global room alone does not admit a retry into a full tenant.
         async with factory.begin() as session:
@@ -193,16 +201,30 @@ async def test_exact_global_and_tenant_saturation(shared_world):  # noqa: F811
         await repo.claim_next(tenants[1])
         async with factory() as session:
             assert (await session.get(CrawlerJob, expired_id)).status == CrawlerJobStatus.RUNNING
+        # A pending retry in a full tenant does not block an unrelated tenant.
+        started = time.perf_counter()
+        unrelated = await admit(factory, tenants[1], users[1], companies[1],
+                                "b4-global-unrelated")
+        print(f"B4 unrelated admission at 9999 queued: {time.perf_counter() - started:.3f}s")
+        assert unrelated.status == CrawlerJobStatus.QUEUED
         # Both rooms are needed; then the retry becomes queued without overflow.
         async with factory.begin() as session:
             await session.execute(delete(CrawlerJob).where(CrawlerJob.id == local_filler[0]))
+        started = time.perf_counter()
+        with pytest.raises(HTTPException) as reserved:
+            await admit(factory, tenants[1], users[1], companies[1],
+                        "b4-global-priority")
+        print(f"B4 correlated reservation at 9999 queued: {time.perf_counter() - started:.3f}s")
+        assert reserved.value.status_code == 429
         await asyncio.sleep(2.1)
-        await repo.claim_next(tenants[1])
+        started = time.perf_counter()
+        await repo.claim_next(uuid4())
+        print(f"B4 recovery at 9999 queued: {time.perf_counter() - started:.3f}s")
         async with factory() as session:
             assert (await session.get(CrawlerJob, expired_id)).status == CrawlerJobStatus.QUEUED
             assert await session.scalar(select(func.count()).select_from(CrawlerJob).where(
                 CrawlerJob.status == CrawlerJobStatus.QUEUED,
-            )) == 9999
+            )) == 10_000
             assert await session.scalar(select(func.count()).select_from(CrawlerJob).where(
                 CrawlerJob.tenant_id == tenants[0],
                 CrawlerJob.status == CrawlerJobStatus.QUEUED,
@@ -231,19 +253,20 @@ async def test_admission_races_multiple_recovery_workers_for_last_tenant_slot(sh
         await gate.wait()
         return await repo.claim_next(tenants[1])
 
-    async def submit():
+    async def submit(index: int):
         await gate.wait()
         try:
             return await admit(factory, tenants[0], users[0], companies[0],
-                               "b4-admission-recovery-race")
+                               f"b4-admission-recovery-race-{index}")
         except HTTPException as exc:
             return exc
 
     tasks = [asyncio.create_task(recover()) for _ in range(4)]
-    tasks.append(asyncio.create_task(submit()))
+    tasks.extend(asyncio.create_task(submit(index)) for index in range(12))
     gate.set()
     results = await asyncio.wait_for(asyncio.gather(*tasks), 15)
-    assert isinstance(results[-1], HTTPException) and results[-1].status_code == 429
+    assert all(isinstance(item, HTTPException) and item.status_code == 429
+               for item in results[4:])
     async with factory() as session:
         row = await session.get(CrawlerJob, job_id)
         ledger = await session.scalar(select(CrawlerJobAttempt).where(
@@ -280,3 +303,81 @@ async def test_saturated_tenant_does_not_block_other_tenant_recovery(shared_worl
         assert await session.scalar(select(func.count()).select_from(CrawlerJob).where(
             CrawlerJob.tenant_id == tenants[1], CrawlerJob.status == CrawlerJobStatus.QUEUED,
         )) == 100
+
+
+@pytest.mark.asyncio
+async def test_bounded_scan_rotates_past_saturated_tenant(shared_world):  # noqa: F811
+    factory, tenants, users, companies = shared_world
+    repo = PostgresCrawlerJobRepository(factory)
+    blocked = await add_jobs(factory, tenants[0], users[0], companies[0], 33)
+    eligible = (await add_jobs(factory, tenants[1], users[1], companies[1]))[0]
+    async with factory.begin() as session:
+        for index, job_id in enumerate([*blocked, eligible]):
+            row = await session.get(CrawlerJob, job_id, with_for_update=True)
+            assert row is not None
+            row.status = CrawlerJobStatus.RUNNING
+            row.attempts = 1
+            row.started_at = datetime.now(UTC) - timedelta(minutes=2)
+            row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            row.next_attempt_at = datetime.now(UTC) - timedelta(seconds=100 - index)
+            session.add(CrawlerJobAttempt(
+                tenant_id=row.tenant_id, job_id=row.id, generation=1,
+                worker_id=users[index == 33], claimed_at=row.started_at,
+                ended_at=row.lease_expires_at, outcome="expired",
+            ))
+    await add_jobs(factory, tenants[0], users[0], companies[0], 100)
+    await add_jobs(factory, tenants[1], users[1], companies[1], 99)
+    await repo.claim_next(uuid4())
+    async with factory() as session:
+        assert (await session.get(CrawlerJob, eligible)).status == CrawlerJobStatus.RUNNING
+    await repo.claim_next(uuid4())
+    async with factory() as session:
+        assert (await session.get(CrawlerJob, eligible)).status == CrawlerJobStatus.QUEUED
+        assert await session.scalar(select(func.count()).select_from(CrawlerJob).where(
+            CrawlerJob.tenant_id == tenants[1], CrawlerJob.status == CrawlerJobStatus.QUEUED,
+        )) == 100
+
+
+@pytest.mark.asyncio
+async def test_claim_skips_more_than_64_older_jobs_in_active_saturated_tenant(shared_world):  # noqa: F811
+    factory, tenants, users, companies = shared_world
+    repo = PostgresCrawlerJobRepository(factory)
+    await add_jobs(factory, tenants[0], users[0], companies[0], 2)
+    assert await repo.claim_next(tenants[0]) is not None
+    assert await repo.claim_next(tenants[0]) is not None
+    await add_jobs(factory, tenants[0], users[0], companies[0], 65)
+    eligible = (await add_jobs(factory, tenants[1], users[1], companies[1]))[0]
+    claim = await repo.claim_next()
+    assert claim is not None and claim.job_id == eligible
+
+
+@pytest.mark.asyncio
+async def test_admission_bounds_recovery_backlog_per_tenant(shared_world):  # noqa: F811
+    factory, tenants, users, companies = shared_world
+    pending_ids = await add_jobs(factory, tenants[0], users[0], companies[0], 3)
+    async with factory.begin() as session:
+        for job_id in pending_ids:
+            row = await session.get(CrawlerJob, job_id, with_for_update=True)
+            assert row is not None
+            row.status = CrawlerJobStatus.RUNNING
+            row.attempts = 1
+            row.started_at = datetime.now(UTC) - timedelta(minutes=2)
+            row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            row.next_attempt_at = datetime.now(UTC) + timedelta(hours=1)
+    filler = await add_jobs(factory, tenants[0], users[0], companies[0], 99)
+    with pytest.raises(HTTPException) as rejected:
+        await admit(factory, tenants[0], users[0], companies[0], "b4-backlog-over-cap")
+    assert rejected.value.status_code == 429
+    assert rejected.value.detail == {"code": "crawler_tenant_queue_full"}
+    async with factory.begin() as session:
+        await session.execute(delete(CrawlerJob).where(CrawlerJob.id == filler[0]))
+    accepted = await admit(factory, tenants[0], users[0], companies[0], "b4-backlog-final")
+    assert accepted.status == CrawlerJobStatus.QUEUED
+    async with factory() as session:
+        queued = await session.scalar(select(func.count()).select_from(CrawlerJob).where(
+            CrawlerJob.tenant_id == tenants[0], CrawlerJob.status == CrawlerJobStatus.QUEUED,
+        ))
+        running = await session.scalar(select(func.count()).select_from(CrawlerJob).where(
+            CrawlerJob.tenant_id == tenants[0], CrawlerJob.status == CrawlerJobStatus.RUNNING,
+        ))
+        assert queued == 99 and running == 3 and queued + running == 102

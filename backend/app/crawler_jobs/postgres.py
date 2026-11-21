@@ -109,6 +109,7 @@ class PostgresCrawlerJobRepository:
             ) or 0
             queued_by_tenant: dict[UUID, int] = {}
             for row in rows:
+                fresh_expiration = row.lease_token is not None
                 attempt = await self._attempt(session, row)
                 if attempt is not None and attempt.ended_at is None:
                     attempt.ended_at = now
@@ -158,8 +159,7 @@ class PostgresCrawlerJobRepository:
                                 CrawlerJob.status == CrawlerJobStatus.QUEUED,
                             )
                         ) or 0
-                    if (row.next_attempt_at is None or row.started_at is None or
-                            row.next_attempt_at <= row.started_at):
+                    if fresh_expiration or row.next_attempt_at is None:
                         row.next_attempt_at = now + timedelta(
                             seconds=min(60, 2**row.attempts)
                         )
@@ -199,6 +199,15 @@ class PostgresCrawlerJobRepository:
             )
             if (global_running or 0) >= 8:
                 return None
+            saturated_tenants = (await session.scalars(
+                select(CrawlerJob.tenant_id)
+                .where(
+                    CrawlerJob.status == CrawlerJobStatus.RUNNING,
+                    CrawlerJob.lease_expires_at > now,
+                )
+                .group_by(CrawlerJob.tenant_id)
+                .having(func.count() >= 2)
+            )).all()
             candidate_query = (
                 select(CrawlerJob)
                 .where(
@@ -213,6 +222,10 @@ class PostgresCrawlerJobRepository:
             )
             if tenant_id is not None:
                 candidate_query = candidate_query.where(CrawlerJob.tenant_id == tenant_id)
+            if saturated_tenants:
+                candidate_query = candidate_query.where(
+                    CrawlerJob.tenant_id.not_in(saturated_tenants)
+                )
             candidates = await session.scalars(candidate_query)
             selected: CrawlerJob | None = None
             for candidate in candidates:
