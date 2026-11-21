@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.crawler_jobs.db_resources import CrawlerDatabaseResources
 from app.crawler_jobs.postgres import PostgresCrawlerJobRepository
 from app.crawler_jobs.process_executor import ChildTerminationError, ProcessCrawler
 from app.crawler_jobs.timing import CrawlerTiming
@@ -19,11 +20,19 @@ logger = logging.getLogger("levi.crawler_worker")
 
 async def run() -> None:
     timing = CrawlerTiming.from_env()
+    database_resources = CrawlerDatabaseResources.from_env()
     database_url = os.environ.get("CRAWLER_DATABASE_URL")
     if not database_url:
         raise RuntimeError("CRAWLER_DATABASE_URL is required")
-    concurrency = max(1, min(8, int(os.environ.get("CRAWLER_WORKER_CONCURRENCY", "2"))))
-    engine = create_async_engine(database_url, pool_pre_ping=True, pool_size=concurrency)
+    concurrency = database_resources.concurrency
+    engine = create_async_engine(
+        database_url,
+        pool_pre_ping=True,
+        pool_size=database_resources.pool_size,
+        max_overflow=database_resources.max_overflow,
+        pool_timeout=database_resources.pool_timeout_seconds,
+        connect_args={"timeout": database_resources.connect_timeout_seconds},
+    )
     factory = async_sessionmaker(engine, expire_on_commit=False)
     repository = PostgresCrawlerJobRepository(factory)
     worker_id = uuid4()
