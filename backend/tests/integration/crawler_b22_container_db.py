@@ -25,11 +25,14 @@ COMPANY = UUID("00000000-0000-4000-8000-00000000b223")
 JOB = UUID("00000000-0000-4000-8000-00000000b224")
 
 
-async def main(action: str) -> None:
+async def main(action: str, mode: str = "wait") -> None:
     engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         if action == "seed":
+            if mode not in {"finish", "block", "wait", "ignore-term"}:
+                raise ValueError("invalid synthetic mode")
+            website_url = f"https://example.test/{mode}"
             async with factory.begin() as session:
                 session.add(Tenant(id=TENANT, name="B22 synthetic", slug="b22-synthetic"))
                 session.add(User(
@@ -38,11 +41,11 @@ async def main(action: str) -> None:
                 ))
                 session.add(Company(
                     id=COMPANY, tenant_id=TENANT, name="Synthetic company",
-                    normalized_domain="b22.example.test", website_url="https://example.test",
+                    normalized_domain="b22.example.test", website_url=website_url,
                 ))
                 session.add(CrawlerJob(
                     id=JOB, tenant_id=TENANT, company_id=COMPANY, created_by_user_id=USER,
-                    website_url="https://example.test", idempotency_key="b22-synthetic-job",
+                    website_url=website_url, idempotency_key="b22-synthetic-job",
                     request_fingerprint="b" * 64, status=CrawlerJobStatus.QUEUED,
                 ))
         elif action == "expire":
@@ -75,6 +78,7 @@ async def main(action: str) -> None:
                 ))
                 print({
                     "status": row.status.value, "attempts": row.attempts,
+                    "failure_code": row.failure_code,
                     "outcomes": [attempt.outcome for attempt in attempts],
                     "sources": sources,
                 })
@@ -85,4 +89,4 @@ async def main(action: str) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1]))
+    asyncio.run(main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "wait"))
